@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.github
+node_modules
+frontend
+whistleblower.db
+.next
+dist
+.env*.local

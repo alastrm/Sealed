@@ -1,0 +1,43 @@
+{
+  "name": "sealed",
+  "version": "1.0.0",
+  "description": "E2EE Whistleblower System - Cryptographic Lifecycle, Zero-Knowledge Backend & Frontend",
+  "main": "poc.ts",
+  "scripts": {
+    "start": "ts-node poc.ts",
+    "poc": "ts-node poc.ts",
+    "e2e": "ts-node e2e.ts",
+    "test": "ts-node poc.ts",
+    "backend": "python -m uvicorn main:app --port 8000 --reload",
+    "seed": "python seed.py",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build",
+    "frontend:start": "npm --prefix frontend run start"
+  },
+  "keywords": [
+    "libsodium",
+    "bip39",
+    "e2ee",
+    "whistleblower",
+    "zero-knowledge",
+    "argon2id",
+    "x25519",
+    "fastapi",
+    "nextjs"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "bip39": "^3.1.0",
+    "libsodium-wrappers": "^0.8.4",
+    "libsodium-wrappers-sumo": "^0.8.4"
+  },
+  "devDependencies": {
+    "@types/libsodium-wrappers": "^0.7.14",
+    "@types/libsodium-wrappers-sumo": "^0.7.8",
+    "@types/node": "^26.6.4",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.23.15",
+    "typescript": "~5.8.2"
+  }
+}

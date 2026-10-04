@@ -1,0 +1,130 @@
+import secrets
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from database import get_db
+from models import Case, CaseStatus
+from schemas import (
+    CaseAccessRequestDto,
+    CaseAccessResponseDto,
+    CaseCreatedResponse,
+    CaseMessageDto,
+    CreateCaseDto,
+)
+
+router = APIRouter(prefix="/api/v1/cases", tags=["Cases"])
+
+
+@router.post(
+    "",
+    response_model=CaseCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Submit New Whistleblower Case",
+    description="Accepts an anonymous encrypted report, stores it with OPEN status, and links it to reporter's token hash.",
+)
+def create_case(
+    payload: CreateCaseDto,
+    db: Session = Depends(get_db),
+) -> CaseCreatedResponse:
+    # Check if a case with this ID already exists
+    existing = db.get(Case, payload.case_id)
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Case with ID '{payload.case_id}' already exists.",
+        )
+
+    case = Case(
+        id=payload.case_id,
+        case_access_token_hash=payload.case_access_token_hash,
+        reporter_public_key=payload.reporter_public_key,
+        encrypted_report=payload.encrypted_report,
+        status=CaseStatus.OPEN,
+    )
+    db.add(case)
+    db.commit()
+    db.refresh(case)
+
+    return CaseCreatedResponse(
+        case_id=case.id,
+        status=case.status,
+        created_at=case.created_at,
+    )
+
+
+@router.post(
+    "/lookup",
+    response_model=CaseAccessResponseDto,
+    summary="Lookup Case by Access Token Hash (No UUID Required)",
+    description="Reporter queries case purely using their derived 12-word mnemonic token hash.",
+)
+def lookup_case(
+    payload: CaseAccessRequestDto,
+    db: Session = Depends(get_db),
+) -> CaseAccessResponseDto:
+    stmt = select(Case).where(Case.case_access_token_hash == payload.case_access_token_hash)
+    case = db.execute(stmt).scalars().first()
+    if not case:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Обращение с такой мнемонической фразой не найдено. Проверьте правильность введённых слов.",
+        )
+
+    # Constant-time comparison to ensure exact verification
+    if not secrets.compare_digest(payload.case_access_token_hash, case.case_access_token_hash):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access Denied: Invalid case access token hash.",
+        )
+
+    messages = [CaseMessageDto.model_validate(m) for m in case.messages]
+
+    return CaseAccessResponseDto(
+        case_id=case.id,
+        status=case.status,
+        created_at=case.created_at,
+        reporter_public_key=case.reporter_public_key,
+        messages=messages,
+    )
+
+
+@router.post(
+    "/{case_id}/access",
+    response_model=CaseAccessResponseDto,
+    summary="Access Case by ID and Access Token Hash",
+    description="Verifies the reporter's caseAccessTokenHash using constant-time comparison and returns messages thread.",
+)
+def access_case(
+    case_id: str,
+    payload: CaseAccessRequestDto,
+    db: Session = Depends(get_db),
+) -> CaseAccessResponseDto:
+    case = db.get(Case, case_id)
+    if not case:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Case with ID '{case_id}' was not found.",
+        )
+
+    # Constant-time comparison to prevent timing attacks
+    is_authorized = secrets.compare_digest(
+        payload.case_access_token_hash,
+        case.case_access_token_hash,
+    )
+
+    if not is_authorized:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access Denied: Invalid case access token hash.",
+        )
+
+    messages = [CaseMessageDto.model_validate(m) for m in case.messages]
+
+    return CaseAccessResponseDto(
+        case_id=case.id,
+        status=case.status,
+        created_at=case.created_at,
+        reporter_public_key=case.reporter_public_key,
+        messages=messages,
+    )
