@@ -100,6 +100,25 @@ def list_investigator_cases(
     return result
 
 
+@router.get(
+    "/cases/{case_id}/messages",
+    response_model=list[CaseMessageDto],
+    summary="Get All Messages in a Case Thread",
+    description="Returns all authenticated messages exchanged between investigator and reporter for this case.",
+)
+def get_case_messages(
+    case_id: str,
+    db: Session = Depends(get_db),
+) -> list[CaseMessageDto]:
+    case = db.get(Case, case_id)
+    if not case:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Case with ID '{case_id}' was not found.",
+        )
+    return [CaseMessageDto.model_validate(m) for m in case.messages]
+
+
 @router.post(
     "/cases/{case_id}/messages",
     response_model=CaseMessageDto,

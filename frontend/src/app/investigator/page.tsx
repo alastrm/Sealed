@@ -16,11 +16,13 @@ import {
 import { api } from '@/lib/api';
 import {
   decryptReport,
+  decryptCaseMessageForInvestigator,
   encryptInvestigatorReply,
   unlockInvestigatorKey,
   wipeMemory,
 } from '@/lib/crypto';
 import type {
+  CaseMessageDto,
   InvestigatorAccountRecord,
   InvestigatorCaseListItem,
 } from '@/lib/types';
@@ -44,6 +46,10 @@ export default function InvestigatorPortalPage() {
   // Case Detail / Reply State
   const [decryptedReportText, setDecryptedReportText] = useState<string | null>(null);
   const [isDecryptingReport, setIsDecryptingReport] = useState(false);
+  const [threadMessages, setThreadMessages] = useState<
+    Array<CaseMessageDto & { decryptedText: string }>
+  >([]);
+  const [isLoadingThread, setIsLoadingThread] = useState(false);
   const [replyText, setReplyText] = useState('');
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [replySuccess, setReplySuccess] = useState(false);
@@ -99,24 +105,48 @@ export default function InvestigatorPortalPage() {
 
     setSelectedCaseId(c.id);
     setDecryptedReportText(null);
+    setThreadMessages([]);
     setReplyText('');
     setReplySuccess(false);
     setActionError(null);
     setIsDecryptingReport(true);
+    setIsLoadingThread(true);
 
     try {
-      // Decrypt Sealed Box via crypto_box_seal_open
+      // 1. Decrypt Sealed Box via crypto_box_seal_open
       const text = await decryptReport(
         c.encryptedReport,
         account.publicKey,
         privateKey
       );
       setDecryptedReportText(text);
+
+      // 2. Fetch and decrypt message thread
+      const messages = await api.getCaseMessages(c.id);
+      const decrypted = await Promise.all(
+        messages.map(async (msg) => {
+          try {
+            const decText = await decryptCaseMessageForInvestigator(
+              msg,
+              c.reporterPublicKey,
+              privateKey
+            );
+            return { ...msg, decryptedText: decText };
+          } catch {
+            return {
+              ...msg,
+              decryptedText: '[Ошибка расшифровки сообщения: неверный ключ или данные]',
+            };
+          }
+        })
+      );
+      setThreadMessages(decrypted);
     } catch (err: unknown) {
       console.error(err);
       setActionError('Ошибка расшифровки Sealed Box сообщения: повреждённые данные.');
     } finally {
       setIsDecryptingReport(false);
+      setIsLoadingThread(false);
     }
   }
 
@@ -140,13 +170,17 @@ export default function InvestigatorPortalPage() {
       );
 
       // POST to backend
-      await api.sendInvestigatorResponse(selectedCaseId, {
+      const newMsg = await api.sendInvestigatorResponse(selectedCaseId, {
         caseId: selectedCaseId,
         encryptedResponse,
         nonce,
         investigatorPublicKey: account.publicKey,
       });
 
+      setThreadMessages((prev) => [
+        ...prev,
+        { ...newMsg, decryptedText: replyText.trim() },
+      ]);
       setReplySuccess(true);
       setReplyText('');
 
@@ -171,6 +205,7 @@ export default function InvestigatorPortalPage() {
     setCases([]);
     setSelectedCaseId(null);
     setDecryptedReportText(null);
+    setThreadMessages([]);
   }
 
   const selectedCase = cases.find((c) => c.id === selectedCaseId);
@@ -317,6 +352,59 @@ export default function InvestigatorPortalPage() {
                   ) : (
                     <div className="p-4 rounded-xl bg-red-950/20 border border-red-500/30 text-red-300 text-xs">
                       Не удалось расшифровать сообщение.
+                    </div>
+                  )}
+                </div>
+
+                {/* Dialogue Thread */}
+                <div className="space-y-3 pt-4 border-t border-zinc-900">
+                  <div className="flex items-center justify-between text-xs font-semibold text-zinc-200">
+                    <span>История диалога ({threadMessages.length})</span>
+                    {isLoadingThread && (
+                      <span className="flex items-center gap-1.5 text-zinc-400 text-[11px]">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        Загрузка сообщений...
+                      </span>
+                    )}
+                  </div>
+
+                  {threadMessages.length === 0 && !isLoadingThread ? (
+                    <div className="p-4 rounded-xl bg-black/40 border border-zinc-900 text-zinc-500 text-xs text-center">
+                      Ответов и уточнений по этому кейсу ещё не было.
+                    </div>
+                  ) : (
+                    <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                      {threadMessages.map((msg, idx) => {
+                        const isFromReporter = msg.sender === 'REPORTER';
+                        return (
+                          <div
+                            key={msg.id || idx}
+                            className={`p-3.5 rounded-xl border space-y-1.5 ${
+                              isFromReporter
+                                ? 'bg-amber-950/10 border-amber-900/30'
+                                : 'bg-zinc-900/40 border-zinc-800'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span
+                                className={`text-[10px] font-mono px-2 py-0.5 rounded font-medium ${
+                                  isFromReporter
+                                    ? 'bg-amber-950/30 border border-amber-700/40 text-amber-300'
+                                    : 'bg-emerald-950/30 border border-emerald-700/40 text-emerald-300'
+                                }`}
+                              >
+                                {isFromReporter ? 'Репортёр (Аноним)' : 'Следователь (Вы)'}
+                              </span>
+                              <span className="text-[10px] text-zinc-400 font-mono">
+                                {new Date(msg.createdAt).toLocaleString('ru-RU')}
+                              </span>
+                            </div>
+                            <p className="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed font-sans">
+                              {msg.decryptedText}
+                            </p>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

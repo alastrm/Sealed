@@ -12,12 +12,13 @@
 
 import { Buffer } from 'buffer';
 import * as bip39 from 'bip39';
+import type sodiumType from 'libsodium-wrappers-sumo';
 import type { InvestigatorAccountRecord } from './types';
 
 // Ensure Buffer is present in client browser environment
 if (typeof window !== 'undefined') {
-  // @ts-ignore
-  window.Buffer = window.Buffer || Buffer;
+  (window as unknown as { Buffer: typeof Buffer }).Buffer =
+    (window as unknown as { Buffer: typeof Buffer }).Buffer || Buffer;
 }
 
 const KDF_CONTEXT = {
@@ -37,12 +38,12 @@ export interface ReporterSecrets {
 }
 
 // Global cached sodium instance
-let sodium: any = null;
+let sodium: typeof sodiumType | null = null;
 
 /**
  * Initializes and awaits libsodium WASM. Safe to call multiple times.
  */
-export async function initCrypto(): Promise<any> {
+export async function initCrypto(): Promise<typeof sodiumType> {
   if (sodium) return sodium;
 
   const libsodium = await import('libsodium-wrappers-sumo').then((m) => m.default || m);
@@ -147,7 +148,11 @@ export const CONSTANT_BLOCK_SIZE = 4096; // 4 KB constant padding against traffi
 /**
  * Safely removes Libsodium padding, falling back to raw bytes if unpadded.
  */
-export function safeUnpad(s: any, bytes: Uint8Array, blockSize: number = CONSTANT_BLOCK_SIZE): Uint8Array {
+export function safeUnpad(
+  s: typeof sodiumType,
+  bytes: Uint8Array,
+  blockSize: number = CONSTANT_BLOCK_SIZE
+): Uint8Array {
   try {
     return s.unpad(bytes, blockSize);
   } catch {
@@ -303,6 +308,67 @@ export async function encryptInvestigatorReply(
     encryptedResponse: s.to_base64(encrypted, s.base64_variants.ORIGINAL),
     nonce: s.to_base64(nonce, s.base64_variants.ORIGINAL),
   };
+}
+
+/**
+ * Encrypts a reporter follow-up message using investigator's public key and reporter's private key.
+ * Uses crypto_box_easy with 4KB padding.
+ */
+export async function encryptReporterReply(
+  text: string,
+  investigatorPubKeyBase64: string,
+  reporterPrivKey: Uint8Array
+): Promise<{ encryptedMessage: string; nonce: string }> {
+  const s = await initCrypto();
+  const investigatorPubKey = s.from_base64(
+    investigatorPubKeyBase64,
+    s.base64_variants.ORIGINAL
+  );
+  const nonce = s.randombytes_buf(s.crypto_box_NONCEBYTES);
+  const messageBytes = s.from_string(text);
+  const paddedBytes = s.pad(messageBytes, CONSTANT_BLOCK_SIZE);
+
+  const encrypted = s.crypto_box_easy(
+    paddedBytes,
+    nonce,
+    investigatorPubKey,
+    reporterPrivKey,
+    'uint8array'
+  );
+
+  return {
+    encryptedMessage: s.to_base64(encrypted, s.base64_variants.ORIGINAL),
+    nonce: s.to_base64(nonce, s.base64_variants.ORIGINAL),
+  };
+}
+
+/**
+ * Decrypts a message from the case thread for the investigator.
+ * Uses crypto_box_open_easy with investigator's private key and reporter's public key.
+ */
+export async function decryptCaseMessageForInvestigator(
+  record: {
+    encryptedResponse: string;
+    nonce: string;
+  },
+  reporterPubKeyBase64: string,
+  investigatorPrivKey: Uint8Array
+): Promise<string> {
+  const s = await initCrypto();
+  const ciphertext = s.from_base64(record.encryptedResponse, s.base64_variants.ORIGINAL);
+  const nonce = s.from_base64(record.nonce, s.base64_variants.ORIGINAL);
+  const reporterPubKey = s.from_base64(reporterPubKeyBase64, s.base64_variants.ORIGINAL);
+
+  const decryptedBytes = s.crypto_box_open_easy(
+    ciphertext,
+    nonce,
+    reporterPubKey,
+    investigatorPrivKey,
+    'uint8array'
+  );
+
+  const unpadded = safeUnpad(s, decryptedBytes, CONSTANT_BLOCK_SIZE);
+  return s.to_string(unpadded);
 }
 
 /**

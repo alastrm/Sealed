@@ -175,6 +175,36 @@ def run_tests() -> None:
     asyncio.run(run_limiter_test())
     print("[PASS] Test 9: Sliding Window Rate Limiter (Throttles abuse -> 429 Too Many Requests)")
 
+    # Test 10: Reporter Follow-up Message (Bidirectional Thread)
+    reporter_reply_payload = {
+        "caseAccessTokenHash": "546WDnBX9BKWBTACognIt9gyp0kvdqU2CW/boA0lldc=",
+        "encryptedMessage": "reporter_reply_ciphertext_base64_example_payload...",
+        "nonce": "reporter_nonce_24_bytes_base64_example...",
+        "investigatorPublicKey": pubkey_data["publicKey"],
+    }
+
+    # 10a: Unauthorized reporter reply with wrong token hash
+    bad_reply = dict(reporter_reply_payload)
+    bad_reply["caseAccessTokenHash"] = "WRONG_TOKEN_HASH="
+    res = client.post(f"/api/v1/cases/{test_case_id}/messages", json=bad_reply)
+    assert res.status_code == 403, f"Expected 403, got {res.status_code}"
+
+    # 10b: Authorized reporter reply
+    res = client.post(f"/api/v1/cases/{test_case_id}/messages", json=reporter_reply_payload)
+    assert res.status_code == 201, f"Expected 201, got {res.status_code}: {res.text}"
+    rep_msg = res.json()
+    assert rep_msg["sender"] == "REPORTER"
+    assert rep_msg["caseId"] == test_case_id
+
+    # 10c: Investigator fetches full thread
+    res = client.get(f"/api/v1/investigators/cases/{test_case_id}/messages")
+    assert res.status_code == 200
+    thread = res.json()
+    assert len(thread) == 2
+    assert thread[0]["sender"] == "INVESTIGATOR"
+    assert thread[1]["sender"] == "REPORTER"
+    print("[PASS] Test 10: Bidirectional dialog (Reporter follow-up & investigator thread retrieval)")
+
     print("==================================================================")
     print("ALL API INTEGRATION TESTS PASSED SUCCESSFULLY!")
     print("==================================================================")
@@ -182,3 +212,4 @@ def run_tests() -> None:
 
 if __name__ == "__main__":
     run_tests()
+

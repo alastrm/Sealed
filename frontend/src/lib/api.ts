@@ -7,6 +7,7 @@ import type {
   InvestigatorCaseListItem,
   InvestigatorPublicKeyResponse,
   InvestigatorResponseDto,
+  ReporterReplyDto,
 } from './types';
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || '';
@@ -78,6 +79,13 @@ export const api = {
     return handleResponse<InvestigatorCaseListItem[]>(res);
   },
 
+  async getCaseMessages(caseId: string): Promise<CaseMessageDto[]> {
+    const res = await fetch(`${API_BASE}/api/v1/investigators/cases/${caseId}/messages`, {
+      cache: 'no-store',
+    });
+    return handleResponse<CaseMessageDto[]>(res);
+  },
+
   async sendInvestigatorResponse(
     caseId: string,
     dto: InvestigatorResponseDto
@@ -89,4 +97,17 @@ export const api = {
     });
     return handleResponse<CaseMessageDto>(res);
   },
+
+  async sendReporterReply(
+    caseId: string,
+    dto: ReporterReplyDto
+  ): Promise<CaseMessageDto> {
+    const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(dto),
+    });
+    return handleResponse<CaseMessageDto>(res);
+  },
 };
+

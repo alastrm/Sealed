@@ -95,6 +95,7 @@ class CaseMessage(Base):
     encrypted_response: Mapped[str] = mapped_column(Text, nullable=False)
     nonce: Mapped[str] = mapped_column(String(64), nullable=False)
     investigator_public_key: Mapped[str] = mapped_column(Text, nullable=False)
+    sender: Mapped[str] = mapped_column(String(32), default="INVESTIGATOR", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

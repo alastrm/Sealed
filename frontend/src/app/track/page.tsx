@@ -11,9 +11,15 @@ import {
   Key,
   Trash2,
   RefreshCw,
+  Send,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { decryptInvestigatorResponse, deriveReporterSecrets } from '@/lib/crypto';
+import {
+  decryptInvestigatorResponse,
+  deriveReporterSecrets,
+  encryptReporterReply,
+  type ReporterSecrets,
+} from '@/lib/crypto';
 import type { CaseAccessResponseDto, CaseMessageDto } from '@/lib/types';
 
 export default function TrackCasePage() {
@@ -42,9 +48,15 @@ export default function TrackCasePage() {
 
   // Authenticated state
   const [caseData, setCaseData] = useState<CaseAccessResponseDto | null>(null);
+  const [activeSecrets, setActiveSecrets] = useState<ReporterSecrets | null>(null);
   const [decryptedMessages, setDecryptedMessages] = useState<
     (CaseMessageDto & { decryptedText: string })[]
   >([]);
+
+  // Reply state
+  const [replyText, setReplyText] = useState('');
+  const [isSendingReply, setIsSendingReply] = useState(false);
+  const [replyError, setReplyError] = useState<string | null>(null);
 
   function handleClearSession() {
     try {
@@ -55,7 +67,9 @@ export default function TrackCasePage() {
     setMnemonicInput('');
     setFromSession(false);
     setCaseData(null);
+    setActiveSecrets(null);
     setDecryptedMessages([]);
+    setReplyText('');
   }
 
   // Count words entered
@@ -73,6 +87,7 @@ export default function TrackCasePage() {
     try {
       // 1. Deterministically derive keys and token hash on client
       const secrets = await deriveReporterSecrets(cleanMnemonic);
+      setActiveSecrets(secrets);
 
       // 2. Query blind backend purely by caseAccessTokenHash (NO UUID NEEDED)
       const res = await api.lookupCase(secrets.caseAccessTokenHashBase64);
@@ -106,6 +121,42 @@ export default function TrackCasePage() {
       }
     } finally {
       setIsVerifying(false);
+    }
+  }
+
+  async function handleSendReply(e: React.FormEvent) {
+    e.preventDefault();
+    if (!replyText.trim() || !caseData || !activeSecrets) return;
+
+    setIsSendingReply(true);
+    setReplyError(null);
+
+    try {
+      const pubKeyData = await api.getInvestigatorPublicKey();
+      const { encryptedMessage, nonce } = await encryptReporterReply(
+        replyText.trim(),
+        pubKeyData.publicKey,
+        activeSecrets.privateKey
+      );
+
+      const newMsg = await api.sendReporterReply(caseData.caseId, {
+        caseAccessTokenHash: activeSecrets.caseAccessTokenHashBase64,
+        encryptedMessage,
+        nonce,
+        investigatorPublicKey: pubKeyData.publicKey,
+      });
+
+      setDecryptedMessages((prev) => [
+        ...prev,
+        { ...newMsg, decryptedText: replyText.trim() },
+      ]);
+      setReplyText('');
+    } catch (err: unknown) {
+      console.error(err);
+      const msg = err instanceof Error ? err.message : '';
+      setReplyError(msg || 'Не удалось отправить ответ следователю.');
+    } finally {
+      setIsSendingReply(false);
     }
   }
 
@@ -293,36 +344,91 @@ export default function TrackCasePage() {
               </div>
             ) : (
               <div className="space-y-3">
-                {decryptedMessages.map((msg) => (
-                  <div
-                    key={msg.id}
-                    className="border border-zinc-800 bg-zinc-950/80 rounded-2xl p-5 space-y-3"
-                  >
-                    <div className="flex items-center justify-between text-xs pb-2 border-b border-zinc-900">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold text-zinc-200">
-                          Следователь (комплаенс)
-                        </span>
-                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-400">
-                          E2EE Box
+                {decryptedMessages.map((msg) => {
+                  const isMe = msg.sender === 'REPORTER';
+                  return (
+                    <div
+                      key={msg.id}
+                      className={`border rounded-2xl p-5 space-y-3 ${
+                        isMe
+                          ? 'border-zinc-700 bg-zinc-900/60'
+                          : 'border-zinc-800 bg-zinc-950/80'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-xs pb-2 border-b border-zinc-900">
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-zinc-200">
+                            {isMe ? 'Вы (репортёр)' : 'Следователь (комплаенс)'}
+                          </span>
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-zinc-800 bg-zinc-900 text-zinc-400">
+                            E2EE Box
+                          </span>
+                        </div>
+                        <span className="font-mono text-[11px] text-zinc-400">
+                          {new Date(msg.createdAt).toLocaleString('ru-RU')}
                         </span>
                       </div>
-                      <span className="font-mono text-[11px] text-zinc-400">
-                        {new Date(msg.createdAt).toLocaleString('ru-RU')}
-                      </span>
-                    </div>
 
-                    <p className="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed">
-                      {msg.decryptedText}
-                    </p>
+                      <p className="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed font-sans">
+                        {msg.decryptedText}
+                      </p>
 
-                    <div className="pt-1 text-[11px] font-mono text-zinc-400">
-                      &bull; Аутентифицировано через Poly1305 MAC
+                      <div className="pt-1 text-[11px] font-mono text-zinc-400">
+                        &bull; Аутентифицировано через Poly1305 MAC
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
+
+            {/* Reporter Follow-Up Reply Form */}
+            <form onSubmit={handleSendReply} className="border border-zinc-800/90 bg-zinc-950/60 rounded-2xl p-5 space-y-3 pt-4">
+              <div className="flex items-center justify-between">
+                <label htmlFor="reporterReply" className="text-xs font-semibold text-zinc-200">
+                  Ответить следователю
+                </label>
+                <span className="text-[10px] font-mono text-zinc-400">
+                  Двусторонний E2EE диалог
+                </span>
+              </div>
+
+              <textarea
+                id="reporterReply"
+                rows={3}
+                value={replyText}
+                onChange={(e) => setReplyText(e.target.value)}
+                placeholder="Напишите уточнение или ответ на вопросы следователя..."
+                className="w-full rounded-xl bg-black border border-zinc-800 px-4 py-2.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 transition-all font-sans resize-y leading-relaxed"
+                required
+              />
+
+              {replyError && (
+                <div className="p-2.5 rounded-xl border border-red-500/30 bg-red-950/20 text-red-300 text-xs">
+                  {replyError}
+                </div>
+              )}
+
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={isSendingReply || !replyText.trim()}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white text-black font-medium text-xs hover:bg-zinc-200 disabled:opacity-40 transition-all"
+                >
+                  {isSendingReply ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-black" />
+                      <span>Шифрование...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Отправить ответ</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

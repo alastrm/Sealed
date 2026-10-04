@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import Case, CaseStatus
+from models import Case, CaseMessage, CaseStatus
 from rate_limiter import case_lookup_limiter, report_submission_limiter
 from schemas import (
     CaseAccessRequestDto,
@@ -12,6 +12,7 @@ from schemas import (
     CaseCreatedResponse,
     CaseMessageDto,
     CreateCaseDto,
+    ReporterReplyDto,
 )
 
 router = APIRouter(prefix="/api/v1/cases", tags=["Cases"])
@@ -132,3 +133,44 @@ def access_case(
         reporter_public_key=case.reporter_public_key,
         messages=messages,
     )
+
+
+@router.post(
+    "/{case_id}/messages",
+    response_model=CaseMessageDto,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(case_lookup_limiter)],
+    summary="Submit Reporter Follow-Up Reply",
+    description="Enables two-way encrypted dialogue. Reporter sends an authenticated follow-up message to investigator.",
+)
+def add_reporter_message(
+    case_id: str,
+    payload: ReporterReplyDto,
+    db: Session = Depends(get_db),
+) -> CaseMessageDto:
+    case = db.get(Case, case_id)
+    if not case:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Case with ID '{case_id}' was not found.",
+        )
+
+    if not secrets.compare_digest(payload.case_access_token_hash, case.case_access_token_hash):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access Denied: Invalid case access token hash.",
+        )
+
+    message = CaseMessage(
+        case_id=case.id,
+        encrypted_response=payload.encrypted_message,
+        nonce=payload.nonce,
+        investigator_public_key=payload.investigator_public_key,
+        sender="REPORTER",
+    )
+    case.status = CaseStatus.IN_REVIEW
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+
+    return CaseMessageDto.model_validate(message)
