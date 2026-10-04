@@ -149,6 +149,32 @@ def run_tests() -> None:
     assert "kdfSalt" in account_data
     print("[PASS] Test 8: GET /api/v1/investigators/account (Zero-Knowledge login blob)")
 
+    # Test 9: Sliding Window Rate Limiter
+    import asyncio
+    from rate_limiter import SlidingWindowRateLimiter
+
+    test_limiter = SlidingWindowRateLimiter(times=3, seconds=60)
+
+    class DummyClient:
+        host = "192.168.1.100"
+
+    class DummyRequest:
+        headers = {}
+        client = DummyClient()
+
+    async def run_limiter_test():
+        for _ in range(3):
+            await test_limiter(DummyRequest())
+        try:
+            await test_limiter(DummyRequest())
+            assert False, "Expected 429 Too Many Requests was not raised"
+        except Exception as exc:
+            assert hasattr(exc, "status_code") and exc.status_code == 429
+            assert "Retry-After" in exc.headers
+
+    asyncio.run(run_limiter_test())
+    print("[PASS] Test 9: Sliding Window Rate Limiter (Throttles abuse -> 429 Too Many Requests)")
+
     print("==================================================================")
     print("ALL API INTEGRATION TESTS PASSED SUCCESSFULLY!")
     print("==================================================================")

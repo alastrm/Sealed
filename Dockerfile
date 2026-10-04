@@ -10,7 +10,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source code
-COPY database.py main.py models.py schemas.py seed.py ./
+COPY database.py main.py models.py schemas.py seed.py rate_limiter.py ./
 COPY routers/ ./routers/
 
 EXPOSE 8000

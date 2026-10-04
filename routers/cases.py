@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import Case, CaseStatus
+from rate_limiter import case_lookup_limiter, report_submission_limiter
 from schemas import (
     CaseAccessRequestDto,
     CaseAccessResponseDto,
@@ -20,6 +21,7 @@ router = APIRouter(prefix="/api/v1/cases", tags=["Cases"])
     "",
     response_model=CaseCreatedResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(report_submission_limiter)],
     summary="Submit New Whistleblower Case",
     description="Accepts an anonymous encrypted report, stores it with OPEN status, and links it to reporter's token hash.",
 )
@@ -56,6 +58,7 @@ def create_case(
 @router.post(
     "/lookup",
     response_model=CaseAccessResponseDto,
+    dependencies=[Depends(case_lookup_limiter)],
     summary="Lookup Case by Access Token Hash (No UUID Required)",
     description="Reporter queries case purely using their derived 12-word mnemonic token hash.",
 )
@@ -92,6 +95,7 @@ def lookup_case(
 @router.post(
     "/{case_id}/access",
     response_model=CaseAccessResponseDto,
+    dependencies=[Depends(case_lookup_limiter)],
     summary="Access Case by ID and Access Token Hash",
     description="Verifies the reporter's caseAccessTokenHash using constant-time comparison and returns messages thread.",
 )

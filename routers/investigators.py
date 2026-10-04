@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import Case, CaseMessage, CaseStatus, Investigator
+from rate_limiter import auth_limiter
 from schemas import (
     CaseMessageDto,
     InvestigatorAccountDto,
@@ -47,6 +48,7 @@ def get_investigator_public_key(
 @router.get(
     "/account",
     response_model=InvestigatorAccountDto,
+    dependencies=[Depends(auth_limiter)],
     summary="Get Encrypted Investigator Account Blob (Zero-Knowledge Login)",
     description="Returns the encrypted private key blob, KDF salt, and limits for client-side password decryption.",
 )
