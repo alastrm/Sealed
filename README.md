@@ -1,6 +1,6 @@
 # SEALED — E2EE Anonymous Whistleblower Dropbox
 
-> **Pet project:** End-to-End Encrypted (E2EE) anonymous dropbox with a Zero-Knowledge backend.  
+> End-to-End Encrypted (E2EE) anonymous dropbox with a Zero-Knowledge backend.  
 > **Tech stack:** FastAPI (Python 3.12), Next.js 16 (React 19, TypeScript), libsodium (WebAssembly), SQLite / PostgreSQL, Docker Compose.
 
 ---
