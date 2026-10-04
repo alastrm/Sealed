@@ -129,6 +129,16 @@ function fromBase64(base64Str: string): Uint8Array {
 // 3. INVESTIGATOR SUBSYSTEM
 // ============================================================================
 
+export const CONSTANT_BLOCK_SIZE = 4096; // 4 KB padding block against traffic analysis
+
+export function safeUnpad(bytes: Uint8Array, blockSize: number = CONSTANT_BLOCK_SIZE): Uint8Array {
+  try {
+    return sodium.unpad(bytes, blockSize);
+  } catch {
+    return bytes;
+  }
+}
+
 export class InvestigatorService {
   /**
    * Initializes a new investigator account.
@@ -227,7 +237,7 @@ export class InvestigatorService {
 
   /**
    * Decrypts an anonymous sealed report using investigator's keypair.
-   * Primitives: crypto_box_seal_open (ECIES-style ephemeral-static X25519).
+   * Primitives: crypto_box_seal_open (ECIES-style ephemeral-static X25519) + 4KB unpadding.
    */
   static decryptAnonymousReport(
     encryptedReportBase64: string,
@@ -244,12 +254,13 @@ export class InvestigatorService {
       'uint8array'
     );
 
-    return sodium.to_string(decryptedBytes);
+    const unpadded = safeUnpad(decryptedBytes, CONSTANT_BLOCK_SIZE);
+    return sodium.to_string(unpadded);
   }
 
   /**
    * Encrypts an authenticated response addressed to the reporter.
-   * Primitives: crypto_box_easy (X25519-XSalsa20-Poly1305 authenticated encryption).
+   * Primitives: crypto_box_easy (X25519-XSalsa20-Poly1305 authenticated encryption) + 4KB padding.
    */
   static createResponse(
     caseId: string,
@@ -261,9 +272,10 @@ export class InvestigatorService {
     const reporterPublicKey = fromBase64(reporterPublicKeyBase64);
     const nonce = sodium.randombytes_buf(sodium.crypto_box_NONCEBYTES);
     const messageBytes = sodium.from_string(responseText);
+    const padded = sodium.pad(messageBytes, CONSTANT_BLOCK_SIZE);
 
     const encryptedResponse = sodium.crypto_box_easy(
-      messageBytes,
+      padded,
       nonce,
       reporterPublicKey,
       investigatorPrivateKey,
@@ -364,7 +376,7 @@ export class ReporterService {
 
   /**
    * Creates and anonymously encrypts a whistleblower case report using investigator's public key.
-   * Primitives: crypto_box_seal (Anonymous Sealed Box: sender generates ephemeral keypair).
+   * Primitives: crypto_box_seal (Anonymous Sealed Box: sender generates ephemeral keypair) + 4KB padding.
    */
   static createCase(
     reportText: string,
@@ -373,10 +385,11 @@ export class ReporterService {
   ): CreateCaseDto {
     const investigatorPublicKey = fromBase64(investigatorPublicKeyBase64);
     const messageBytes = sodium.from_string(reportText);
+    const paddedBytes = sodium.pad(messageBytes, CONSTANT_BLOCK_SIZE);
 
     // Anonymous encryption: ephemeral X25519 keypair is generated and discarded by libsodium
     const encryptedReport = sodium.crypto_box_seal(
-      messageBytes,
+      paddedBytes,
       investigatorPublicKey,
       'uint8array'
     );
@@ -391,7 +404,7 @@ export class ReporterService {
 
   /**
    * Decrypts an authenticated response received from the investigator.
-   * Primitives: crypto_box_open_easy (Verifies investigator identity via Poly1305 MAC).
+   * Primitives: crypto_box_open_easy (Verifies investigator identity via Poly1305 MAC) + 4KB unpadding.
    */
   static decryptResponse(
     messageRecord: CaseMessageRecord,
@@ -409,7 +422,8 @@ export class ReporterService {
       'uint8array'
     );
 
-    return sodium.to_string(decryptedBytes);
+    const unpadded = safeUnpad(decryptedBytes, CONSTANT_BLOCK_SIZE);
+    return sodium.to_string(unpadded);
   }
 }
 

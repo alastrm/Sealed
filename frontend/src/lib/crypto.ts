@@ -142,9 +142,22 @@ export async function generateReporterBundle(): Promise<{
   return { mnemonic, secrets };
 }
 
+export const CONSTANT_BLOCK_SIZE = 4096; // 4 KB constant padding against traffic analysis
+
+/**
+ * Safely removes Libsodium padding, falling back to raw bytes if unpadded.
+ */
+export function safeUnpad(s: any, bytes: Uint8Array, blockSize: number = CONSTANT_BLOCK_SIZE): Uint8Array {
+  try {
+    return s.unpad(bytes, blockSize);
+  } catch {
+    return bytes;
+  }
+}
+
 /**
  * Anonymously encrypts a whistleblower report using the investigator's public key.
- * Uses crypto_box_seal: generates an ephemeral keypair on the fly, discards the private key.
+ * Uses crypto_box_seal with 4KB padding: generates an ephemeral keypair on the fly, discards the private key.
  */
 export async function encryptReport(
   text: string,
@@ -156,14 +169,15 @@ export async function encryptReport(
     s.base64_variants.ORIGINAL
   );
   const messageBytes = s.from_string(text);
+  const paddedBytes = s.pad(messageBytes, CONSTANT_BLOCK_SIZE);
 
-  const sealedBytes = s.crypto_box_seal(messageBytes, investigatorPubKey, 'uint8array');
+  const sealedBytes = s.crypto_box_seal(paddedBytes, investigatorPubKey, 'uint8array');
   return s.to_base64(sealedBytes, s.base64_variants.ORIGINAL);
 }
 
 /**
  * Decrypts an authenticated investigator reply using reporter's private key.
- * Verifies authenticity and integrity via Poly1305 MAC.
+ * Verifies authenticity and integrity via Poly1305 MAC, then strips 4KB padding.
  */
 export async function decryptInvestigatorResponse(
   record: {
@@ -190,7 +204,8 @@ export async function decryptInvestigatorResponse(
     'uint8array'
   );
 
-  return s.to_string(decryptedBytes);
+  const unpadded = safeUnpad(s, decryptedBytes, CONSTANT_BLOCK_SIZE);
+  return s.to_string(unpadded);
 }
 
 /**
@@ -236,7 +251,7 @@ export async function unlockInvestigatorKey(
 }
 
 /**
- * Decrypts an anonymous sealed report for the investigator.
+ * Decrypts an anonymous sealed report for the investigator and strips 4KB padding.
  */
 export async function decryptReport(
   encryptedReportBase64: string,
@@ -254,12 +269,13 @@ export async function decryptReport(
     'uint8array'
   );
 
-  return s.to_string(decryptedBytes);
+  const unpadded = safeUnpad(s, decryptedBytes, CONSTANT_BLOCK_SIZE);
+  return s.to_string(unpadded);
 }
 
 /**
  * Encrypts an investigator response to a reporter.
- * Uses crypto_box_easy with a fresh 24-byte CSPRNG nonce.
+ * Applies 4KB padding and uses crypto_box_easy with a fresh 24-byte CSPRNG nonce.
  */
 export async function encryptInvestigatorReply(
   text: string,
@@ -273,9 +289,10 @@ export async function encryptInvestigatorReply(
   );
   const nonce = s.randombytes_buf(s.crypto_box_NONCEBYTES);
   const messageBytes = s.from_string(text);
+  const paddedBytes = s.pad(messageBytes, CONSTANT_BLOCK_SIZE);
 
   const encrypted = s.crypto_box_easy(
-    messageBytes,
+    paddedBytes,
     nonce,
     reporterPubKey,
     investigatorPrivKey,
