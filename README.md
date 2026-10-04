@@ -1,188 +1,184 @@
-# SEALED — Zero-Knowledge E2EE Whistleblower Platform
+# SEALED — Pet-проект: E2EE анонимный ящик доверия
 
-> **A production-grade, cryptographically verifiable anonymous reporting system.**  
-> Built with modern **Zero-Knowledge principles**, **Libsodium (WebAssembly)**, **BIP-39**, **FastAPI**, and **Next.js**.
+> **Стек:** FastAPI (Python 3.12), Next.js 16 (React 19, TypeScript), libsodium (WebAssembly), SQLite / PostgreSQL, Docker Compose.
 
 ---
 
-## 1. Overview & Architecture
+## Зачем сделан
 
-**SEALED** is an End-to-End Encrypted (E2EE) whistleblowing platform designed for corporate compliance, investigative journalism, and human rights advocacy. 
+Pet-проект написан для практики и проверки двух концепций:
+1. **Работа с WebAssembly-криптографией в браузере (`libsodium-wrappers-sumo`)**: генерация ключей, деривация секретов по стандартам BIP-39 / BLAKE2b, шифрование открытым ключом (Sealed Box) и аутентифицированный диалог на эллиптических кривых X25519 в браузере без передачи приватных ключей на сервер.
+2. **Zero-Knowledge архитектура бэкенда**: проектирование API, где сервер выступает исключительно слепым релеем (blind relay). Бэкенд не валидирует содержимое, не хранит пароли, не видит открытого текста и не может скомпрометировать переписку даже при полной утечке базы данных.
 
-Unlike traditional "anonymous" dropboxes that rely on server-side promises, SEALED enforces anonymity through **mathematical and cryptographic guarantees**:
-- The server acts as an **untrusted, blind storage relay**.
-- Plaintext reports and private keys **never touch the network or database**.
-- Reporters do not register accounts or handle technical UUIDs. A **12-word BIP-39 mnemonic phrase** is their sole cryptographic credential to access correspondence.
+---
 
-### Cryptographic Workflow Diagram
+## Как это работает
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Reporter as Reporter (Browser)
-    participant Relay as Blind Relay (FastAPI)
-    participant DB as Encrypted Database
-    actor Officer as Investigator (Compliance Lead)
+```
+[ Репортёр ]                                      [ Сервер (FastAPI) ]                       [ Следователь ]
+     |                                                     |                                        |
+     |-- 1. Запрос публичного ключа ---------------------->|                                        |
+     |<-- Возврат X25519 pubkey ---------------------------|                                        |
+     |                                                     |                                        |
+     |-- 2. Генерация 12 слов BIP-39                       |                                        |
+     |   Деривация reporter keypair + access_token_hash    |                                        |
+     |   Паддинг текста до 4 КБ + crypto_box_seal -------->|                                        |
+     |   (сохранение слепой записи)                        |-- Сохранение в БД -------------------->|
+     |                                                     |                                        |
+     |                                                     |<-- 3. Логин: запрос блоба ключа -------|
+     |                                                     |--- Отдача KDF salt + encrypted privKey>|
+     |                                                     |    Argon2id KEK локально в браузере    |
+     |                                                     |    crypto_box_seal_open + unpad 4 КБ   |
+     |                                                     |                                        |
+     |                                                     |<-- 4. Ответ следователя (crypto_box) --|
+     |<-- 5. Проверка по 12 словам (/cases/lookup) --------|                                        |
+     |    Деривация ключа + crypto_box_open_easy + unpad   |                                        |
+     |<================ Двусторонний зашифрованный диалог =========================================>|
+```
 
-    Note over Officer,Relay: Phase 1: Investigator Key Provisioning
-    Officer->>Officer: Derive KEK from Password via Argon2id
-    Officer->>Officer: Generate X25519 Keypair (crypto_box_keypair)
-    Officer->>Relay: Publish Public Key (Base64)
-    Relay->>DB: Store Investigator Account Blob (Argon2id Salt + Encrypted PrivKey)
+### 1. Репортёр и доступ без логина (BIP-39)
+- Пользователь пишет обращение без регистрации.
+- Браузер генерирует **12-словную мнемонику BIP-39** (128 бит энтропии).
+- Через `crypto_generichash` (BLAKE2b с раздельными контекстными доменами) детерминированно выводятся:
+  - `reporterPrivateKey` и `reporterPublicKey` (X25519);
+  - `caseAccessToken` и `caseAccessTokenHash` (32 байта).
+- Репортёру не нужно знать технический UUID кейса — единственным ключом доступа к диалогу остаются 12 слов.
 
-    Note over Reporter,Relay: Phase 2: Anonymous Report Submission
-    Reporter->>Relay: GET /api/v1/investigators/public-key
-    Relay-->>Reporter: Investigator X25519 Public Key
-    Reporter->>Reporter: Generate 12-Word BIP-39 Mnemonic
-    Reporter->>Reporter: Derive X25519 Keypair + Case Access Token Hash via BLAKE2b
-    Reporter->>Reporter: crypto_box_seal(ReportText, InvestigatorPubKey)
-    Reporter->>Relay: POST /api/v1/cases { caseAccessTokenHash, reporterPubKey, encryptedReport }
-    Relay->>DB: Store Case (Blind Row)
-    Relay-->>Reporter: 201 Created
+### 2. Анонимный Sealed Box и защита от анализа трафика
+- Браузер запрашивает публичный ключ следователя (`GET /api/v1/investigators/public-key`).
+- Текст выравнивается паддингом до фиксированного размера **4 КБ** (`crypto_pad`). Это скрывает реальную длину сообщения от анализа размера пакетов в сети.
+- Шифрование выполняется функцией `crypto_box_seal` (ECIES: клиент генерирует эфемерную пару ключей, шифрует пейлоад и сразу стирает эфемерный приватный ключ из памяти).
+- На сервер уходит DTO: `{ reporterPublicKey, caseAccessTokenHash, encryptedReport }`. Сервер не способен прочитать содержимое.
 
-    Note over Officer,Relay: Phase 3: Investigator Review & Authenticated Reply
-    Officer->>Relay: GET /api/v1/investigators/cases
-    Relay-->>Officer: List of Encrypted Cases
-    Officer->>Officer: crypto_box_seal_open(encryptedReport, OfficerPrivKey) -> Plaintext
-    Officer->>Officer: crypto_box_easy(ReplyText, Nonce, ReporterPubKey, OfficerPrivKey)
-    Officer->>Relay: POST /api/v1/investigators/cases/{id}/messages { encryptedResponse, nonce }
-    Relay->>DB: Store Encrypted Message
+### 3. Авторизация следователя без передачи пароля
+- Приватный ключ следователя хранится на сервере в виде зашифрованного шифротекста (`crypto_secretbox_easy`).
+- При авторизации следователь получает соль и параметры Argon2id (`GET /api/v1/investigators/account`).
+- Браузер локально вычисляет симметричный KEK (Key Encryption Key) через `crypto_pwhash` (Argon2id) и расшифровывает приватный ключ в оперативной памяти вкладки. Пароль на сервер не отправляется.
 
-    Note over Reporter,Relay: Phase 4: Reporter Anonymous Lookup & Decryption
-    Reporter->>Reporter: Enter 12 Words -> Derive caseAccessTokenHash + ReporterPrivKey
-    Reporter->>Relay: POST /api/v1/cases/lookup { caseAccessTokenHash }
-    Relay->>Relay: Constant-time secrets.compare_digest verification
-    Relay-->>Reporter: Encrypted Messages Thread
-    Reporter->>Reporter: crypto_box_open_easy(encryptedResponse, Nonce, OfficerPubKey, ReporterPrivKey)
-    Reporter->>Reporter: Render Plaintext Thread (Authenticated via Poly1305 MAC)
+### 4. Двусторонний диалог
+- Ответ следователя шифруется через `crypto_box_easy` (X25519 ECDH + XSalsa20-Poly1305) с паддингом до 4 КБ.
+- Репортёр вводит свои 12 слов на странице отслеживания (`/track`), клиент восстанавливает приватный ключ и запрашивает тред через `POST /api/v1/cases/lookup`.
+- Репортёр может отправлять уточнения следователю (`POST /api/v1/cases/{case_id}/messages`). Сервер проверяет права на отправку через `secrets.compare_digest(caseAccessTokenHash)`.
+- Поскольку обе стороны используют общую пару ключей Диффи-Хеллмана, сообщения в треде аутентифицированы (Poly1305 MAC) и защищены от подделки третьей стороной.
+
+### 5. Защита API от злоупотреблений
+- На эндпоинты создания кейсов, поиска по токену и авторизации следователя навешен **Sliding Window Rate Limiter**:
+  - `POST /cases`: 10 запросов / минута;
+  - `POST /cases/lookup`: 20 запросов / минута;
+  - `GET /account`: 15 запросов / минута.
+- При превышении отдаётся HTTP `429 Too Many Requests` с заголовком `Retry-After`.
+
+---
+
+## Реальные ограничения системы
+
+Любая честная инженерная оценка безопасности E2EE в вебе должна фиксировать границы применимости:
+
+1. **Web-E2EE и доверие к кодовой базе (TOFU)**  
+   Браузер получает JavaScript с сервера при каждой загрузке. Если инфраструктура хостинга или CDN скомпрометирована, злоумышленник может внедрить в бандл код, перехватывающий вводимую мнемонику или открытый текст до шифрования. В реальном продакшене такие системы требуют жестких заголовков CSP, Subresource Integrity (SRI), либо распространения в виде подписанного расширения / десктопного бинарника.
+2. **Сетевой уровень (IP-адреса)**  
+   Шифрование защищает только тело HTTP-запроса. Провайдер связи и хостинг-провайдер видят факт обращения с конкретного IP-адреса. Для реальной физической анонимности репортёр должен открывать сервис исключительно через **Tor Browser** или Onion-домен (`.onion`).
+3. **Безопасность рабочей станции**  
+   Если устройство пользователя заражено трояном или кейлоггером, криптография бессильна: мнемоника или текст отчёта будут перехвачены на этапе ввода.
+
+---
+
+## Структура проекта
+
+```
+Sealed/
+├── backend/ (в корне)
+│   ├── main.py              # Инициализация FastAPI, middleware, CORS
+│   ├── models.py            # SQLAlchemy 2.0 модели (Investigator, Case, CaseMessage)
+│   ├── schemas.py           # Pydantic v2 схемы с alias generator для camelCase
+│   ├── rate_limiter.py      # Скользящее окно (sliding window) для ограничения частоты запросов
+│   ├── seed.py              # Скрипт инициализации тестового следователя
+│   ├── test_api.py          # 10 сквозных интеграционных тестов API
+│   └── routers/
+│       ├── cases.py         # Эндпоинты репортёра: создание, поиск, диалог
+│       └── investigators.py # Эндпоинты следователя: ключи, список, отправка ответа
+├── frontend/                # Next.js 16 App Router
+│   ├── src/
+│   │   ├── lib/
+│   │   │   ├── crypto.ts    # Обертка над Libsodium WASM, BIP-39, паддинг 4 КБ
+│   │   │   ├── api.ts       # Клиент к REST API
+│   │   │   └── types.ts     # TypeScript-типы DTO
+│   │   └── app/
+│   │       ├── page.tsx          # Главная: создание и шифрование отчёта
+│   │       ├── track/page.tsx    # Отслеживание и диалог по 12 словам
+│   │       └── investigator/page.tsx # Кабинет следователя: расшифровка и ответы
+├── poc.ts                   # Автономный TypeScript PoC криптографического цикла
+├── docker-compose.yml       # Сборка бэкенда и фронтенда
+└── Dockerfile               # Контейнер FastAPI
 ```
 
 ---
 
-## 2. Threat Model & Security Guarantees
+## Быстрый запуск
 
-### What the System Guarantees
-
-| Security Property | Mechanism & Guarantee |
-| :--- | :--- |
-| **Zero-Knowledge Relay** | The backend server and database administrator possess **zero knowledge** of report contents. All encryptions (`crypto_box_seal` and `crypto_box_easy`) execute entirely in browser memory prior to transit. |
-| **Full Database Leak Resilience** | If the production database is compromised or publicly dumped, the attacker obtains only X25519 public keys, BLAKE2b token hashes, and authenticated ciphertexts. No plaintext reports, replies, or private keys can be recovered. |
-| **No User Identification** | Reporters submit no emails, usernames, or phone numbers. No cookies or server sessions track identity. Technical case UUIDs are decoupled from reporter lookup. |
-| **Timing-Attack Resistance** | Token hash comparisons on the server utilize constant-time `secrets.compare_digest` to prevent byte-by-byte timing side-channel leakage. |
-| **Forward Integrity & Authenticity** | Replies from the compliance officer use `crypto_box_easy` (XSalsa20-Poly1305), guaranteeing both message privacy and tamper-proof sender authenticity via a 16-byte Poly1305 MAC. |
-
-### Honest Architectural Limitations
-
-In accordance with rigorous cryptographic engineering, SEALED explicitly highlights real-world threat boundaries:
-
-1. **Web-E2EE Trust-On-First-Use (TOFU):**  
-   Like all browser-based cryptography, the security of client-side execution assumes the integrity of the served JavaScript bundle. If the hosting infrastructure or CDN is malicious, it could serve modified JavaScript to exfiltrate keys.  
-   *Mitigation:* Subresource Integrity (SRI) hashes, strict Content Security Policy (CSP), or packaging client code as a signed browser extension / desktop binary.
-2. **Network Metadata & IP Privacy:**  
-   Cryptographic encryption protects payload data, but HTTP headers and network packets inherently disclose the reporter’s IP address to network operators, VPNs, and server hosting providers.  
-   *Mitigation:* Reporters requiring high-grade operational security (OpSec) must access SEALED through **Tor Browser** or an Onion Service (`.onion`).
-3. **Endpoint Vulnerability:**  
-   If the reporter's workstation is compromised with active spyware, screen grabbers, or hardware keyloggers, plaintext can be intercepted before encryption or when the 12-word mnemonic is shown.
-
----
-
-## 3. Cryptographic Primitives
-
-All cryptographic primitives are implemented using **Libsodium** (`libsodium-wrappers-sumo` compiled to WebAssembly with high-entropy CSPRNG):
-
-| Primitive | Standard / Algorithm | Parameters / Size | Purpose in SEALED |
-| :--- | :--- | :--- | :--- |
-| **Mnemonic** | BIP-39 | 128-bit entropy (12 words) | User-friendly, seed derivation for reporter credentials. |
-| **KDF & Domain Tags** | BLAKE2b (`crypto_generichash`) | 32-byte key/output, domain-separated | Deterministic derivation of Master Seed, Keypair Seed, and Access Token Hash. |
-| **Anonymous Encryption** | ECIES Sealed Box (`crypto_box_seal`) | X25519 + XSalsa20 + Poly1305 (48-byte overhead) | One-way encryption of reports without disclosing the reporter's public key. |
-| **Authenticated Chat** | `crypto_box_easy` | X25519 ECDH + XSalsa20 stream cipher + 24-byte nonce | Bidirectional, authenticated encryption for investigator replies. |
-| **Message Integrity** | Poly1305 MAC | 16-byte authentication tag | Detects any ciphertext tampering or replay attempt. |
-| **Key Derivation (KDF)** | Argon2id (`crypto_pwhash`) | Memory-hard, configurable ops/mem limits | Derives Key Encryption Key (KEK) from investigator password to unlock private key. |
-
----
-
-## 4. Quickstart Guide
-
-### Option A: Launch in 60 Seconds with Docker Compose
-
-Ensure Docker and Docker Compose are installed, then run:
+### Вариант 1: Docker Compose
 
 ```bash
 docker compose up --build
 ```
+- Фронтенд: [http://localhost:3000](http://localhost:3000)
+- Бэкенд API: [http://localhost:8000](http://localhost:8000)
+- Swagger документация: [http://localhost:8000/docs](http://localhost:8000/docs)
 
-- **Frontend Application:** [http://localhost:3000](http://localhost:3000)
-- **Backend REST API:** [http://localhost:8000](http://localhost:8000)
-- **Interactive Swagger Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
-
-*Note: The backend container automatically runs `seed.py` on startup, provisioning a test investigator.*
+*База данных и тестовый следователь инициализируются автоматически.*
 
 ---
 
-### Option B: Local Development (Without Docker)
+### Вариант 2: Локально (без Docker)
 
-#### 1. Backend Setup (FastAPI + Python 3.10+)
-
+#### Бэкенд (Python 3.10+)
 ```bash
-# In the repository root
+# Создать и активировать виртуальное окружение
 python -m venv venv
-source venv/bin/activate       # On Windows: venv\Scripts\activate
+venv\Scripts\activate   # Linux/macOS: source venv/bin/activate
 
-# Install dependencies
+# Установить зависимости
 pip install -r requirements.txt
 
-# Seed the database with the test investigator
+# Создать тестового следователя в БД
 python seed.py
 
-# Run backend API server
+# Запустить сервер
 uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-#### 2. Frontend Setup (Next.js 16 + TypeScript)
-
+#### Фронтенд (Node.js 18+)
 ```bash
 cd frontend
-
-# Install Node dependencies
 npm install
-
-# Start Next.js development server
 npm run dev
 ```
 
-Visit [http://localhost:3000](http://localhost:3000).
+---
+
+## Тестовые учетные данные
+
+Для проверки кабинета следователя (`/investigator`):
+- **Email:** `compliance.lead@integrity-trust.corp`
+- **Пароль:** `Correct-Horse-Battery-Staple-2026!#`
 
 ---
 
-## 5. Verification & Test Walkthrough
+## Запуск тестов
 
-### Default Test Credentials (Pre-seeded)
-- **Investigator Username:** `compliance.lead@integrity-trust.corp`
-- **Investigator Password:** `Correct-Horse-Battery-Staple-2026!#`
-
-### End-to-End Walkthrough:
-1. **Submit Report (`/`):**  
-   Enter your report text and click **«Запечатать и отправить»**.  
-   Save your generated **12-word mnemonic phrase**.
-2. **Access Investigator Portal (`/investigator`):**  
-   Log in with the pre-filled credentials.  
-   Click the incoming report, observe the client-side **Sealed Box decryption**, write an official reply, and send it.
-3. **Track & Decrypt as Reporter (`/track`):**  
-   Enter your **12 words** (automatically pre-filled from session or pasted manually) and click **«Проверить статус»**.  
-   The client derives your private key, requests your thread, and decrypts the investigator's reply with verified Poly1305 MAC.
-
-### Running Automated Test Suites:
 ```bash
-# Python backend integration test suite
+# 1. Интеграционные тесты API бэкенда (10 тестов: создание, доступ, 403, 409, лимитеры, диалог)
 python test_api.py
 
-# Autonomous cryptographic lifecycle PoC (pure TypeScript)
+# 2. Проверка автономного криптографического PoC
 npx tsx poc.ts
+
+# 3. Сборка фронтенда и проверка типов
+cd frontend && npm run build
 ```
 
 ---
 
-## 6. License & Portfolio
+## Лицензия
 
-Designed and engineered with precision by **Madi Alenov**.  
-Open-source under the [MIT License](LICENSE).
+[MIT](LICENSE)
