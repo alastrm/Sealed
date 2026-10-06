@@ -1,11 +1,11 @@
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import Case, CaseMessage, CaseStatus, Investigator
-from rate_limiter import auth_limiter
+from rate_limiter import LIMIT_AUTH, limiter
 from schemas import (
     CaseMessageDto,
     InvestigatorAccountDto,
@@ -48,11 +48,12 @@ def get_investigator_public_key(
 @router.get(
     "/account",
     response_model=InvestigatorAccountDto,
-    dependencies=[Depends(auth_limiter)],
     summary="Get Encrypted Investigator Account Blob (Zero-Knowledge Login)",
     description="Returns the encrypted private key blob, KDF salt, and limits for client-side password decryption.",
 )
+@limiter.limit(LIMIT_AUTH)
 def get_investigator_account(
+    request: Request,
     username: str | None = Query(None, description="Username of the investigator"),
     db: Session = Depends(get_db),
 ) -> InvestigatorAccountDto:
@@ -145,6 +146,7 @@ def create_investigator_response(
         encrypted_response=payload.encrypted_response,
         nonce=payload.nonce,
         investigator_public_key=payload.investigator_public_key,
+        sender_type="INVESTIGATOR",
     )
     db.add(message)
 

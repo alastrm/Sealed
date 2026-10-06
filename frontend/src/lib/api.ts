@@ -99,10 +99,13 @@ export const api = {
   },
 
   async sendReporterReply(
-    caseId: string,
-    dto: ReporterReplyDto
+    dto: ReporterReplyDto,
+    caseId?: string
   ): Promise<CaseMessageDto> {
-    const res = await fetch(`${API_BASE}/api/v1/cases/${caseId}/messages`, {
+    const url = caseId
+      ? `${API_BASE}/api/v1/cases/${caseId}/messages`
+      : `${API_BASE}/api/v1/cases/messages`;
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(dto),

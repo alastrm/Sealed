@@ -1,11 +1,11 @@
 import secrets
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import Case, CaseMessage, CaseStatus
-from rate_limiter import case_lookup_limiter, report_submission_limiter
+from models import Case, CaseMessage, CaseStatus, Investigator
+from rate_limiter import LIMIT_CREATE_CASE, LIMIT_LOOKUP_CASE, limiter
 from schemas import (
     CaseAccessRequestDto,
     CaseAccessResponseDto,
@@ -22,11 +22,12 @@ router = APIRouter(prefix="/api/v1/cases", tags=["Cases"])
     "",
     response_model=CaseCreatedResponse,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(report_submission_limiter)],
     summary="Submit New Whistleblower Case",
     description="Accepts an anonymous encrypted report, stores it with OPEN status, and links it to reporter's token hash.",
 )
+@limiter.limit(LIMIT_CREATE_CASE)
 def create_case(
+    request: Request,
     payload: CreateCaseDto,
     db: Session = Depends(get_db),
 ) -> CaseCreatedResponse:
@@ -59,11 +60,12 @@ def create_case(
 @router.post(
     "/lookup",
     response_model=CaseAccessResponseDto,
-    dependencies=[Depends(case_lookup_limiter)],
     summary="Lookup Case by Access Token Hash (No UUID Required)",
     description="Reporter queries case purely using their derived 12-word mnemonic token hash.",
 )
+@limiter.limit(LIMIT_LOOKUP_CASE)
 def lookup_case(
+    request: Request,
     payload: CaseAccessRequestDto,
     db: Session = Depends(get_db),
 ) -> CaseAccessResponseDto:
@@ -94,13 +96,61 @@ def lookup_case(
 
 
 @router.post(
+    "/messages",
+    response_model=CaseMessageDto,
+    status_code=status.HTTP_201_CREATED,
+    summary="Submit Reporter Follow-Up Reply (By Access Token Hash)",
+    description="Enables two-way encrypted dialogue. Reporter sends an authenticated follow-up message verified via caseAccessTokenHash.",
+)
+@limiter.limit(LIMIT_LOOKUP_CASE)
+def add_reporter_message_by_hash(
+    request: Request,
+    payload: ReporterReplyDto,
+    db: Session = Depends(get_db),
+) -> CaseMessageDto:
+    stmt = select(Case).where(Case.case_access_token_hash == payload.case_access_token_hash)
+    case = db.execute(stmt).scalars().first()
+    if not case:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Case not found for the provided access token hash.",
+        )
+
+    if not secrets.compare_digest(payload.case_access_token_hash, case.case_access_token_hash):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access Denied: Invalid case access token hash.",
+        )
+
+    inv_pub = payload.investigator_public_key
+    if not inv_pub:
+        inv = db.execute(select(Investigator)).scalars().first()
+        inv_pub = inv.public_key if inv else ""
+
+    message = CaseMessage(
+        case_id=case.id,
+        encrypted_response=payload.encrypted_message,
+        nonce=payload.nonce,
+        investigator_public_key=inv_pub,
+        sender_type="REPORTER",
+    )
+    case.status = CaseStatus.IN_REVIEW
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+
+    return CaseMessageDto.model_validate(message)
+
+
+@router.post(
     "/{case_id}/access",
     response_model=CaseAccessResponseDto,
-    dependencies=[Depends(case_lookup_limiter)],
     summary="Access Case by ID and Access Token Hash",
     description="Verifies the reporter's caseAccessTokenHash using constant-time comparison and returns messages thread.",
 )
+@limiter.limit(LIMIT_LOOKUP_CASE)
 def access_case(
+    request: Request,
     case_id: str,
     payload: CaseAccessRequestDto,
     db: Session = Depends(get_db),
@@ -139,11 +189,12 @@ def access_case(
     "/{case_id}/messages",
     response_model=CaseMessageDto,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(case_lookup_limiter)],
-    summary="Submit Reporter Follow-Up Reply",
+    summary="Submit Reporter Follow-Up Reply by Case ID",
     description="Enables two-way encrypted dialogue. Reporter sends an authenticated follow-up message to investigator.",
 )
+@limiter.limit(LIMIT_LOOKUP_CASE)
 def add_reporter_message(
+    request: Request,
     case_id: str,
     payload: ReporterReplyDto,
     db: Session = Depends(get_db),
@@ -161,12 +212,17 @@ def add_reporter_message(
             detail="Access Denied: Invalid case access token hash.",
         )
 
+    inv_pub = payload.investigator_public_key
+    if not inv_pub:
+        inv = db.execute(select(Investigator)).scalars().first()
+        inv_pub = inv.public_key if inv else ""
+
     message = CaseMessage(
         case_id=case.id,
         encrypted_response=payload.encrypted_message,
         nonce=payload.nonce,
-        investigator_public_key=payload.investigator_public_key,
-        sender="REPORTER",
+        investigator_public_key=inv_pub,
+        sender_type="REPORTER",
     )
     case.status = CaseStatus.IN_REVIEW
     db.add(message)

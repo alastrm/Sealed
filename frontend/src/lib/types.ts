@@ -36,6 +36,7 @@ export interface CaseMessageDto {
   encryptedResponse: string;
   nonce: string;
   investigatorPublicKey: string;
+  senderType?: 'INVESTIGATOR' | 'REPORTER';
   sender: 'INVESTIGATOR' | 'REPORTER';
   createdAt: string;
   // Client-decrypted plaintext (optional in UI state)
@@ -46,7 +47,7 @@ export interface ReporterReplyDto {
   caseAccessTokenHash: string;
   encryptedMessage: string;
   nonce: string;
-  investigatorPublicKey: string;
+  investigatorPublicKey?: string;
 }
 
 export interface CaseAccessResponseDto {

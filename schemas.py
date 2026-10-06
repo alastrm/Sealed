@@ -76,6 +76,7 @@ class CaseMessageDto(CamelModel):
     encrypted_response: str
     nonce: str
     investigator_public_key: str
+    sender_type: str = "INVESTIGATOR"
     sender: str = "INVESTIGATOR"
     created_at: datetime
 
@@ -97,10 +98,11 @@ class ReporterReplyDto(CamelModel):
         ...,
         description="Base64 encoded 24-byte nonce",
     )
-    investigator_public_key: str = Field(
-        ...,
-        description="Base64 encoded investigator public key",
+    investigator_public_key: str | None = Field(
+        default=None,
+        description="Optional Base64 encoded investigator public key (inferred from DB if omitted)",
     )
+
 
 
 class CaseAccessResponseDto(CamelModel):

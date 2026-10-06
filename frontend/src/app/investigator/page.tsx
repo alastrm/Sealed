@@ -375,7 +375,7 @@ export default function InvestigatorPortalPage() {
                   ) : (
                     <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
                       {threadMessages.map((msg, idx) => {
-                        const isFromReporter = msg.sender === 'REPORTER';
+                        const isFromReporter = (msg.senderType || msg.sender) === 'REPORTER';
                         return (
                           <div
                             key={msg.id || idx}

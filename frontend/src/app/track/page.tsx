@@ -139,13 +139,17 @@ export default function TrackCasePage() {
         activeSecrets.privateKey
       );
 
-      const newMsg = await api.sendReporterReply(caseData.caseId, {
-        caseAccessTokenHash: activeSecrets.caseAccessTokenHashBase64,
-        encryptedMessage,
-        nonce,
-        investigatorPublicKey: pubKeyData.publicKey,
-      });
+      const newMsg = await api.sendReporterReply(
+        {
+          caseAccessTokenHash: activeSecrets.caseAccessTokenHashBase64,
+          encryptedMessage,
+          nonce,
+          investigatorPublicKey: pubKeyData.publicKey,
+        },
+        caseData.caseId
+      );
 
+      setCaseData((prev) => (prev ? { ...prev, status: 'IN_REVIEW' } : prev));
       setDecryptedMessages((prev) => [
         ...prev,
         { ...newMsg, decryptedText: replyText.trim() },
@@ -345,7 +349,7 @@ export default function TrackCasePage() {
             ) : (
               <div className="space-y-3">
                 {decryptedMessages.map((msg) => {
-                  const isMe = msg.sender === 'REPORTER';
+                  const isMe = (msg.senderType || msg.sender) === 'REPORTER';
                   return (
                     <div
                       key={msg.id}

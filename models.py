@@ -95,7 +95,9 @@ class CaseMessage(Base):
     encrypted_response: Mapped[str] = mapped_column(Text, nullable=False)
     nonce: Mapped[str] = mapped_column(String(64), nullable=False)
     investigator_public_key: Mapped[str] = mapped_column(Text, nullable=False)
-    sender: Mapped[str] = mapped_column(String(32), default="INVESTIGATOR", nullable=False)
+    sender_type: Mapped[str] = mapped_column(
+        String(32), default="INVESTIGATOR", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -103,3 +105,12 @@ class CaseMessage(Base):
     )
 
     case: Mapped["Case"] = relationship("Case", back_populates="messages")
+
+    @property
+    def sender(self) -> str:
+        return self.sender_type
+
+    @sender.setter
+    def sender(self, val: str) -> None:
+        self.sender_type = val
+
