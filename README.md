@@ -40,11 +40,12 @@ This is a pet project built to explore two engineering concepts in practice:
 - The reporter can post follow-up replies (`POST /api/v1/cases/{case_id}/messages`). The server verifies ownership using constant-time `secrets.compare_digest(caseAccessTokenHash)`.
 - Because both parties compute the identical Diffie-Hellman shared secret, both can decrypt the thread while guaranteeing message authenticity via Poly1305 MACs.
 
-### 5. API Rate Limiting
-- An in-memory sliding-window rate limiter is applied to sensitive endpoints:
-  - `POST /cases`: 10 requests / minute (case submission throttle);
-  - `POST /cases/lookup`: 20 requests / minute (token lookup throttle);
+### 5. API Rate Limiting & Zero IP Logging
+- SlowAPI in-memory rate limiting applied to sensitive endpoints:
+  - `POST /cases`: 5 requests / minute (submission throttle);
+  - `POST /cases/lookup` and `POST /cases/messages`: 15 requests / minute (query throttle);
   - `GET /account`: 15 requests / minute (credential brute-force throttle).
+- Automated IP scrubbing filter in Uvicorn / FastAPI logging: client IP (`client.host`), `X-Forwarded-For`, and `X-Real-IP` are stripped from all stdout/stderr logs.
 - Requests exceeding the limit receive HTTP `429 Too Many Requests` with a `Retry-After` header.
 
 ---
@@ -70,9 +71,10 @@ Sealed/
 │   ├── main.py              # FastAPI app setup, middleware, CORS
 │   ├── models.py            # SQLAlchemy 2.0 models (Investigator, Case, CaseMessage)
 │   ├── schemas.py           # Pydantic v2 schemas with camelCase aliasing
-│   ├── rate_limiter.py      # Thread-safe in-memory sliding-window rate limiter
+│   ├── rate_limiter.py      # SlowAPI rate limiting (5 req/min create, 15 req/min lookup)
+│   ├── logging_config.py    # Zero-knowledge IP stripping for Uvicorn & FastAPI logging
 │   ├── seed.py              # Test investigator seeder
-│   ├── test_api.py          # 10 integration tests covering all flows
+│   ├── test_api.py          # 13 integration tests covering all flows
 │   └── routers/
 │       ├── cases.py         # Reporter endpoints: create, lookup, follow-up messages
 │       └── investigators.py # Investigator endpoints: keys, case listing, replies

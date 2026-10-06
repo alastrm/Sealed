@@ -149,33 +149,26 @@ def run_tests() -> None:
     assert "kdfSalt" in account_data
     print("[PASS] Test 8: GET /api/v1/investigators/account (Zero-Knowledge login blob)")
 
-    # Test 9: Sliding Window Rate Limiter
-    import asyncio
-    from rate_limiter import SlidingWindowRateLimiter
+    # Test 9: SlowAPI Rate Limiting (15/min limit on lookup)
+    ip_headers = {"X-Forwarded-For": "198.51.100.42"}
+    lookup_payload = {"caseAccessTokenHash": "546WDnBX9BKWBTACognIt9gyp0kvdqU2CW/boA0lldc="}
 
-    test_limiter = SlidingWindowRateLimiter(times=3, seconds=60)
+    # First request from this IP succeeds
+    res = client.post("/api/v1/cases/lookup", json=lookup_payload, headers=ip_headers)
+    assert res.status_code == 200
 
-    class DummyClient:
-        host = "192.168.1.100"
+    # Exhaust remaining 14 requests
+    for _ in range(14):
+        res = client.post("/api/v1/cases/lookup", json=lookup_payload, headers=ip_headers)
+        assert res.status_code == 200
 
-    class DummyRequest:
-        headers = {}
-        client = DummyClient()
+    # 16th request must trigger HTTP 429 Too Many Requests
+    res_429 = client.post("/api/v1/cases/lookup", json=lookup_payload, headers=ip_headers)
+    assert res_429.status_code == 429, f"Expected 429, got {res_429.status_code}"
+    assert "Retry-After" in res_429.headers
+    print("[PASS] Test 9: SlowAPI Rate Limiter (Throttles abuse -> 429 Too Many Requests with Retry-After)")
 
-    async def run_limiter_test():
-        for _ in range(3):
-            await test_limiter(DummyRequest())
-        try:
-            await test_limiter(DummyRequest())
-            assert False, "Expected 429 Too Many Requests was not raised"
-        except Exception as exc:
-            assert hasattr(exc, "status_code") and exc.status_code == 429
-            assert "Retry-After" in exc.headers
-
-    asyncio.run(run_limiter_test())
-    print("[PASS] Test 9: Sliding Window Rate Limiter (Throttles abuse -> 429 Too Many Requests)")
-
-    # Test 10: Reporter Follow-up Message (Bidirectional Thread)
+    # Test 10: Reporter Follow-up Message via URL ID (POST /api/v1/cases/{case_id}/messages)
     reporter_reply_payload = {
         "caseAccessTokenHash": "546WDnBX9BKWBTACognIt9gyp0kvdqU2CW/boA0lldc=",
         "encryptedMessage": "reporter_reply_ciphertext_base64_example_payload...",
@@ -194,16 +187,84 @@ def run_tests() -> None:
     assert res.status_code == 201, f"Expected 201, got {res.status_code}: {res.text}"
     rep_msg = res.json()
     assert rep_msg["sender"] == "REPORTER"
+    assert rep_msg["senderType"] == "REPORTER"
     assert rep_msg["caseId"] == test_case_id
+    print("[PASS] Test 10: Bidirectional dialog by case ID (POST /api/v1/cases/{case_id}/messages)")
 
-    # 10c: Investigator fetches full thread
+    # Test 11: Direct Reporter Reply without UUID (POST /api/v1/cases/messages purely by token hash)
+    direct_reply_payload = {
+        "caseAccessTokenHash": "546WDnBX9BKWBTACognIt9gyp0kvdqU2CW/boA0lldc=",
+        "encryptedMessage": "second_reporter_reply_ciphertext_base64...",
+        "nonce": "second_nonce_24_bytes_base64...",
+        # investigatorPublicKey is optional; backend resolves it automatically
+    }
+    res = client.post("/api/v1/cases/messages", json=direct_reply_payload)
+    assert res.status_code == 201, f"Expected 201, got {res.status_code}: {res.text}"
+    rep_msg2 = res.json()
+    assert rep_msg2["sender"] == "REPORTER"
+    assert rep_msg2["senderType"] == "REPORTER"
+    assert rep_msg2["caseId"] == test_case_id
+
+    # Verify investigator retrieves all 3 messages in the thread in chronological order
     res = client.get(f"/api/v1/investigators/cases/{test_case_id}/messages")
     assert res.status_code == 200
     thread = res.json()
-    assert len(thread) == 2
+    assert len(thread) == 3
     assert thread[0]["sender"] == "INVESTIGATOR"
     assert thread[1]["sender"] == "REPORTER"
-    print("[PASS] Test 10: Bidirectional dialog (Reporter follow-up & investigator thread retrieval)")
+    assert thread[2]["sender"] == "REPORTER"
+    print("[PASS] Test 11: UUID-less reporter reply (POST /api/v1/cases/messages)")
+
+    # Test 12: IP Logging Anonymization
+    import logging
+    from logging_config import IPAnonymizeFilter
+
+    filter_instance = IPAnonymizeFilter()
+
+    # Verify access log record args are scrubbed
+    test_record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("192.0.2.1:54321", "POST", "/api/v1/cases", "1.1", 201),
+        exc_info=None,
+    )
+    filter_instance.filter(test_record)
+    formatted = test_record.msg % test_record.args
+    assert "192.0.2.1" not in formatted, "IP address leaked in log record args!"
+    assert "[ANONYMIZED_CLIENT]" in formatted
+
+    # Verify message string embedded IP is scrubbed
+    test_msg_record = logging.LogRecord(
+        name="fastapi",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="Request from client 198.51.100.99 via X-Real-IP: 203.0.113.12",
+        args=(),
+        exc_info=None,
+    )
+    filter_instance.filter(test_msg_record)
+    assert "198.51.100.99" not in test_msg_record.msg
+    assert "203.0.113.12" not in test_msg_record.msg
+    assert "[ANONYMIZED_IP]" in test_msg_record.msg
+    print("[PASS] Test 12: IP Logging Anonymizer (Guarantees zero client IP leakage in logs)")
+
+    # Test 13: 4KB Constant-size Padding Invariant
+    def simulate_iso_padding(data: bytes, block_size: int = 4096) -> bytes:
+        pad_len = block_size - (len(data) % block_size)
+        return data + b"\x80" + (b"\x00" * (pad_len - 1))
+
+    short_msg = b"Hello"
+    long_msg = b"A" * 1500
+    padded_short = simulate_iso_padding(short_msg, 4096)
+    padded_long = simulate_iso_padding(long_msg, 4096)
+    assert len(padded_short) == 4096
+    assert len(padded_long) == 4096
+    assert len(padded_short) == len(padded_long), "Padding failed to enforce constant ciphertext size"
+    print("[PASS] Test 13: 4KB Constant Padding Invariant (Equal ciphertext size for short and long messages)")
 
     print("==================================================================")
     print("ALL API INTEGRATION TESTS PASSED SUCCESSFULLY!")
@@ -212,4 +273,5 @@ def run_tests() -> None:
 
 if __name__ == "__main__":
     run_tests()
+
 

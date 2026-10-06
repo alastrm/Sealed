@@ -1,19 +1,28 @@
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from database import Base, engine
+from logging_config import get_anonymized_uvicorn_log_config, setup_anonymized_logging
+from rate_limiter import limiter
 from routers.cases import router as cases_router
 from routers.investigators import router as investigators_router
+
+# Setup anonymized logging as early as possible
+setup_anonymized_logging()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     Application lifecycle manager:
-    Ensures all database tables exist on startup.
+    Ensures all database tables exist on startup and logging is anonymized.
     """
+    setup_anonymized_logging()
     Base.metadata.create_all(bind=engine)
     yield
 
@@ -27,6 +36,22 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# Connect slowapi Limiter
+app.state.limiter = limiter
+
+
+def rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    retry_after = getattr(exc, "retry_after", 60)
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Enable CORS for web frontend clients
 app.add_middleware(
@@ -61,4 +86,10 @@ def root() -> dict[str, str]:
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_config=get_anonymized_uvicorn_log_config(),
+    )
