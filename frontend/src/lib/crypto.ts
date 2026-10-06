@@ -144,6 +144,7 @@ export async function generateReporterBundle(): Promise<{
 }
 
 export const CONSTANT_BLOCK_SIZE = 4096; // 4 KB constant padding against traffic analysis
+export const MAX_PLAINTEXT_BYTES = CONSTANT_BLOCK_SIZE - 16; // 4080 bytes maximum payload per constant block
 
 /**
  * Safely removes Libsodium padding, falling back to raw bytes if unpadded.
@@ -163,6 +164,7 @@ export function safeUnpad(
 /**
  * Anonymously encrypts a whistleblower report using the investigator's public key.
  * Uses crypto_box_seal with 4KB padding: generates an ephemeral keypair on the fly, discards the private key.
+ * The outgoing ciphertext length is guaranteed to be constant regardless of message size.
  */
 export async function encryptReport(
   text: string,
@@ -174,6 +176,9 @@ export async function encryptReport(
     s.base64_variants.ORIGINAL
   );
   const messageBytes = s.from_string(text);
+  if (messageBytes.length > MAX_PLAINTEXT_BYTES) {
+    throw new Error(`Report exceeds maximum size of ${MAX_PLAINTEXT_BYTES} bytes.`);
+  }
   const paddedBytes = s.pad(messageBytes, CONSTANT_BLOCK_SIZE);
 
   const sealedBytes = s.crypto_box_seal(paddedBytes, investigatorPubKey, 'uint8array');
@@ -294,6 +299,9 @@ export async function encryptInvestigatorReply(
   );
   const nonce = s.randombytes_buf(s.crypto_box_NONCEBYTES);
   const messageBytes = s.from_string(text);
+  if (messageBytes.length > MAX_PLAINTEXT_BYTES) {
+    throw new Error(`Reply exceeds maximum size of ${MAX_PLAINTEXT_BYTES} bytes.`);
+  }
   const paddedBytes = s.pad(messageBytes, CONSTANT_BLOCK_SIZE);
 
   const encrypted = s.crypto_box_easy(
@@ -326,6 +334,9 @@ export async function encryptReporterReply(
   );
   const nonce = s.randombytes_buf(s.crypto_box_NONCEBYTES);
   const messageBytes = s.from_string(text);
+  if (messageBytes.length > MAX_PLAINTEXT_BYTES) {
+    throw new Error(`Message exceeds maximum size of ${MAX_PLAINTEXT_BYTES} bytes.`);
+  }
   const paddedBytes = s.pad(messageBytes, CONSTANT_BLOCK_SIZE);
 
   const encrypted = s.crypto_box_easy(
