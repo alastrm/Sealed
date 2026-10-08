@@ -17,10 +17,21 @@ import { api } from '@/lib/api';
 import {
   decryptInvestigatorResponse,
   deriveReporterSecrets,
+  encryptAttachmentFile,
   encryptReporterReply,
+  packMessagePayload,
+  parseMessageContent,
   type ReporterSecrets,
 } from '@/lib/crypto';
-import type { CaseAccessResponseDto, CaseMessageDto } from '@/lib/types';
+import type {
+  AttachmentMetadata,
+  AuditVerificationResponse,
+  CaseAccessResponseDto,
+  CaseMessageDto,
+} from '@/lib/types';
+import { AuditBadge } from '@/components/AuditBadge';
+import { AttachmentList } from '@/components/AttachmentList';
+import { AttachmentPicker } from '@/components/AttachmentPicker';
 
 export default function TrackCasePage() {
   const [mnemonicInput, setMnemonicInput] = useState(() => {
@@ -50,13 +61,30 @@ export default function TrackCasePage() {
   const [caseData, setCaseData] = useState<CaseAccessResponseDto | null>(null);
   const [activeSecrets, setActiveSecrets] = useState<ReporterSecrets | null>(null);
   const [decryptedMessages, setDecryptedMessages] = useState<
-    (CaseMessageDto & { decryptedText: string })[]
+    (CaseMessageDto & { decryptedText: string; attachments?: AttachmentMetadata[] })[]
   >([]);
+
+  // Tamper-evident Audit Chain state
+  const [auditVerification, setAuditVerification] = useState<AuditVerificationResponse | null>(null);
+  const [isVerifyingAudit, setIsVerifyingAudit] = useState(false);
 
   // Reply state
   const [replyText, setReplyText] = useState('');
+  const [replyFiles, setReplyFiles] = useState<File[]>([]);
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
+
+  async function fetchAuditVerification(caseId: string) {
+    setIsVerifyingAudit(true);
+    try {
+      const res = await api.verifyAuditChain(caseId);
+      setAuditVerification(res);
+    } catch (err) {
+      console.error('Failed to verify audit chain:', err);
+    } finally {
+      setIsVerifyingAudit(false);
+    }
+  }
 
   function handleClearSession() {
     try {
@@ -69,7 +97,9 @@ export default function TrackCasePage() {
     setCaseData(null);
     setActiveSecrets(null);
     setDecryptedMessages([]);
+    setAuditVerification(null);
     setReplyText('');
+    setReplyFiles([]);
   }
 
   // Count words entered
@@ -93,16 +123,25 @@ export default function TrackCasePage() {
       const res = await api.lookupCase(secrets.caseAccessTokenHashBase64);
       setCaseData(res);
 
-      // 3. Decrypt each message locally using reporter's derived private key
+      // Fetch and verify BLAKE2b audit chain
+      fetchAuditVerification(res.caseId);
+
+      // 3. Decrypt each message locally using reporter's derived private key and parse attachments
       const decrypted = await Promise.all(
         res.messages.map(async (msg) => {
           try {
-            const text = await decryptInvestigatorResponse(msg, secrets.privateKey);
-            return { ...msg, decryptedText: text };
+            const rawText = await decryptInvestigatorResponse(msg, secrets.privateKey);
+            const parsed = parseMessageContent(rawText);
+            return {
+              ...msg,
+              decryptedText: parsed.text,
+              attachments: parsed.attachments,
+            };
           } catch {
             return {
               ...msg,
               decryptedText: '[Ошибка расшифровки: сообщение повреждено или не адресовано вам]',
+              attachments: [],
             };
           }
         })
@@ -133,8 +172,27 @@ export default function TrackCasePage() {
 
     try {
       const pubKeyData = await api.getInvestigatorPublicKey();
+
+      // 1. Encrypt and upload any attachments
+      const attachmentsMeta: AttachmentMetadata[] = [];
+      for (const file of replyFiles) {
+        const fileBuffer = await file.arrayBuffer();
+        const fileBytes = new Uint8Array(fileBuffer);
+        const encrypted = await encryptAttachmentFile(fileBytes, file.name, file.type);
+        const uploadRes = await api.uploadAttachment(
+          encrypted.fileBlob,
+          caseData.caseId,
+          activeSecrets.caseAccessTokenHashBase64
+        );
+        encrypted.metadata.attachmentId = uploadRes.attachmentId;
+        attachmentsMeta.push(encrypted.metadata);
+      }
+
+      // 2. Pack plaintext with Zero-Knowledge attachment metadata
+      const packedPayload = packMessagePayload(replyText.trim(), attachmentsMeta);
+
       const { encryptedMessage, nonce } = await encryptReporterReply(
-        replyText.trim(),
+        packedPayload,
         pubKeyData.publicKey,
         activeSecrets.privateKey
       );
@@ -152,9 +210,17 @@ export default function TrackCasePage() {
       setCaseData((prev) => (prev ? { ...prev, status: 'IN_REVIEW' } : prev));
       setDecryptedMessages((prev) => [
         ...prev,
-        { ...newMsg, decryptedText: replyText.trim() },
+        {
+          ...newMsg,
+          decryptedText: replyText.trim(),
+          attachments: attachmentsMeta,
+        },
       ]);
       setReplyText('');
+      setReplyFiles([]);
+
+      // Refresh audit chain verification after adding message
+      fetchAuditVerification(caseData.caseId);
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : '';
@@ -321,6 +387,13 @@ export default function TrackCasePage() {
                 Криптографическая связь подтверждена. Ответы расшифровываются вашим ключом X25519.
               </span>
             </div>
+
+            {/* Cryptographic BLAKE2b Audit Chain Integrity Badge */}
+            <AuditBadge
+              verification={auditVerification}
+              isLoading={isVerifyingAudit}
+              onRefresh={() => caseData && fetchAuditVerification(caseData.caseId)}
+            />
           </div>
 
           {/* Messages Thread */}
@@ -377,6 +450,11 @@ export default function TrackCasePage() {
                         {msg.decryptedText}
                       </p>
 
+                      {/* Decrypted Attachments */}
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <AttachmentList attachments={msg.attachments} />
+                      )}
+
                       <div className="pt-1 text-[11px] font-mono text-zinc-400">
                         &bull; Аутентифицировано через Poly1305 MAC
                       </div>
@@ -405,6 +483,13 @@ export default function TrackCasePage() {
                 placeholder="Напишите уточнение или ответ на вопросы следователя..."
                 className="w-full rounded-xl bg-black border border-zinc-800 px-4 py-2.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 transition-all font-sans resize-y leading-relaxed"
                 required
+              />
+
+              {/* Attachments Picker */}
+              <AttachmentPicker
+                files={replyFiles}
+                onChange={setReplyFiles}
+                disabled={isSendingReply}
               />
 
               {replyError && (

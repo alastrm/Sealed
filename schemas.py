@@ -45,6 +45,10 @@ class CreateCaseDto(CamelModel):
         min_length=1,
         description="Base64 encoded crypto_box_seal anonymous sealed box ciphertext",
     )
+    attachment_ids: list[str] | None = Field(
+        default=None,
+        description="Optional list of blind attachment UUIDs associated with this case",
+    )
 
 
 class CaseCreatedResponse(CamelModel):
@@ -105,6 +109,27 @@ class ReporterReplyDto(CamelModel):
 
 
 
+class CaseAttachmentUploadResponse(CamelModel):
+    """
+    Response returned after blind ciphertext attachment upload.
+    Contains no filename or MIME metadata.
+    """
+    attachment_id: str
+    size_bytes: int
+    created_at: datetime
+
+
+class AuditVerificationResponse(CamelModel):
+    """
+    Cryptographic verification result for a case's BLAKE2b audit hash chain.
+    """
+    is_valid: bool
+    events_count: int
+    broken_at: str | None = None
+    latest_hash: str | None = None
+    reason: str | None = None
+
+
 class CaseAccessResponseDto(CamelModel):
     """
     Response for authorized reporter containing case status and decrypted message thread.
@@ -114,6 +139,7 @@ class CaseAccessResponseDto(CamelModel):
     created_at: datetime
     reporter_public_key: str
     messages: list[CaseMessageDto] = []
+
 
 
 # ---------------------------------------------------------------------------

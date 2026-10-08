@@ -17,15 +17,23 @@ import { api } from '@/lib/api';
 import {
   decryptReport,
   decryptCaseMessageForInvestigator,
+  encryptAttachmentFile,
   encryptInvestigatorReply,
+  packMessagePayload,
+  parseMessageContent,
   unlockInvestigatorKey,
   wipeMemory,
 } from '@/lib/crypto';
 import type {
+  AttachmentMetadata,
+  AuditVerificationResponse,
   CaseMessageDto,
   InvestigatorAccountRecord,
   InvestigatorCaseListItem,
 } from '@/lib/types';
+import { AuditBadge } from '@/components/AuditBadge';
+import { AttachmentList } from '@/components/AttachmentList';
+import { AttachmentPicker } from '@/components/AttachmentPicker';
 
 export default function InvestigatorPortalPage() {
   // Login / Unlock state
@@ -45,15 +53,33 @@ export default function InvestigatorPortalPage() {
 
   // Case Detail / Reply State
   const [decryptedReportText, setDecryptedReportText] = useState<string | null>(null);
+  const [reportAttachments, setReportAttachments] = useState<AttachmentMetadata[]>([]);
   const [isDecryptingReport, setIsDecryptingReport] = useState(false);
   const [threadMessages, setThreadMessages] = useState<
-    Array<CaseMessageDto & { decryptedText: string }>
+    Array<CaseMessageDto & { decryptedText: string; attachments?: AttachmentMetadata[] }>
   >([]);
   const [isLoadingThread, setIsLoadingThread] = useState(false);
   const [replyText, setReplyText] = useState('');
+  const [replyFiles, setReplyFiles] = useState<File[]>([]);
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [replySuccess, setReplySuccess] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // Tamper-evident Audit Chain state
+  const [auditVerification, setAuditVerification] = useState<AuditVerificationResponse | null>(null);
+  const [isVerifyingAudit, setIsVerifyingAudit] = useState(false);
+
+  async function fetchAuditVerification(caseId: string) {
+    setIsVerifyingAudit(true);
+    try {
+      const res = await api.verifyAuditChain(caseId);
+      setAuditVerification(res);
+    } catch (err) {
+      console.error('Failed to verify audit chain:', err);
+    } finally {
+      setIsVerifyingAudit(false);
+    }
+  }
 
   // 1. Handle Investigator Login (Unlock Private Key via Argon2id)
   async function handleLogin(e: React.FormEvent) {
@@ -105,21 +131,28 @@ export default function InvestigatorPortalPage() {
 
     setSelectedCaseId(c.id);
     setDecryptedReportText(null);
+    setReportAttachments([]);
     setThreadMessages([]);
     setReplyText('');
+    setReplyFiles([]);
     setReplySuccess(false);
     setActionError(null);
     setIsDecryptingReport(true);
     setIsLoadingThread(true);
 
+    // Fetch and verify BLAKE2b audit chain for this case
+    fetchAuditVerification(c.id);
+
     try {
-      // 1. Decrypt Sealed Box via crypto_box_seal_open
-      const text = await decryptReport(
+      // 1. Decrypt Sealed Box via crypto_box_seal_open and parse attachments
+      const rawReportText = await decryptReport(
         c.encryptedReport,
         account.publicKey,
         privateKey
       );
-      setDecryptedReportText(text);
+      const parsedReport = parseMessageContent(rawReportText);
+      setDecryptedReportText(parsedReport.text);
+      setReportAttachments(parsedReport.attachments);
 
       // 2. Fetch and decrypt message thread
       const messages = await api.getCaseMessages(c.id);
@@ -131,11 +164,17 @@ export default function InvestigatorPortalPage() {
               c.reporterPublicKey,
               privateKey
             );
-            return { ...msg, decryptedText: decText };
+            const parsedMsg = parseMessageContent(decText);
+            return {
+              ...msg,
+              decryptedText: parsedMsg.text,
+              attachments: parsedMsg.attachments,
+            };
           } catch {
             return {
               ...msg,
               decryptedText: '[Ошибка расшифровки сообщения: неверный ключ или данные]',
+              attachments: [],
             };
           }
         })
@@ -162,14 +201,31 @@ export default function InvestigatorPortalPage() {
     setActionError(null);
 
     try {
-      // Authenticated encryption via crypto_box_easy (investigatorPrivKey -> reporterPubKey)
+      // 1. Encrypt and upload any investigator attachments
+      const attachmentsMeta: AttachmentMetadata[] = [];
+      for (const file of replyFiles) {
+        const fileBuffer = await file.arrayBuffer();
+        const fileBytes = new Uint8Array(fileBuffer);
+        const encrypted = await encryptAttachmentFile(fileBytes, file.name, file.type);
+        const uploadRes = await api.uploadAttachment(
+          encrypted.fileBlob,
+          selectedCaseId
+        );
+        encrypted.metadata.attachmentId = uploadRes.attachmentId;
+        attachmentsMeta.push(encrypted.metadata);
+      }
+
+      // 2. Pack plaintext with Zero-Knowledge attachment metadata
+      const packedPayload = packMessagePayload(replyText.trim(), attachmentsMeta);
+
+      // 3. Authenticated encryption via crypto_box_easy (investigatorPrivKey -> reporterPubKey)
       const { encryptedResponse, nonce } = await encryptInvestigatorReply(
-        replyText.trim(),
+        packedPayload,
         currentCase.reporterPublicKey,
         privateKey
       );
 
-      // POST to backend
+      // 4. POST to backend
       const newMsg = await api.sendInvestigatorResponse(selectedCaseId, {
         caseId: selectedCaseId,
         encryptedResponse,
@@ -179,13 +235,19 @@ export default function InvestigatorPortalPage() {
 
       setThreadMessages((prev) => [
         ...prev,
-        { ...newMsg, decryptedText: replyText.trim() },
+        {
+          ...newMsg,
+          decryptedText: replyText.trim(),
+          attachments: attachmentsMeta,
+        },
       ]);
       setReplySuccess(true);
       setReplyText('');
+      setReplyFiles([]);
 
-      // Refresh cases list
+      // Refresh cases list & audit verification
       await loadCases();
+      fetchAuditVerification(selectedCaseId);
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : '';
@@ -205,6 +267,9 @@ export default function InvestigatorPortalPage() {
     setCases([]);
     setSelectedCaseId(null);
     setDecryptedReportText(null);
+    setReportAttachments([]);
+    setReplyFiles([]);
+    setAuditVerification(null);
     setThreadMessages([]);
   }
 
@@ -319,17 +384,26 @@ export default function InvestigatorPortalPage() {
             ) : (
               <div className="space-y-6">
                 {/* Header */}
-                <div className="border-b border-zinc-900 pb-4 space-y-1">
-                  <span className="text-[11px] uppercase font-mono text-zinc-400 block">
-                    Детализация обращения
-                  </span>
-                  <div className="font-mono text-xs text-zinc-300 select-all">
-                    {selectedCase.id}
+                <div className="border-b border-zinc-900 pb-4 space-y-3">
+                  <div className="space-y-1">
+                    <span className="text-[11px] uppercase font-mono text-zinc-400 block">
+                      Детализация обращения
+                    </span>
+                    <div className="font-mono text-xs text-zinc-300 select-all">
+                      {selectedCase.id}
+                    </div>
                   </div>
+
+                  {/* Cryptographic BLAKE2b Audit Chain Integrity Badge */}
+                  <AuditBadge
+                    verification={auditVerification}
+                    isLoading={isVerifyingAudit}
+                    onRefresh={() => selectedCaseId && fetchAuditVerification(selectedCaseId)}
+                  />
                 </div>
 
                 {/* Decrypted Report Box */}
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <div className="flex items-center justify-between text-xs font-semibold text-zinc-200">
                     <span className="flex items-center gap-1.5 text-zinc-200">
                       <Unlock className="w-3.5 h-3.5 text-zinc-400" />
@@ -346,8 +420,15 @@ export default function InvestigatorPortalPage() {
                       <span>Расшифровка закрытого ящика...</span>
                     </div>
                   ) : decryptedReportText ? (
-                    <div className="p-4 rounded-xl bg-black border border-zinc-800 text-sm text-zinc-100 whitespace-pre-wrap leading-relaxed font-sans">
-                      {decryptedReportText}
+                    <div className="space-y-3">
+                      <div className="p-4 rounded-xl bg-black border border-zinc-800 text-sm text-zinc-100 whitespace-pre-wrap leading-relaxed font-sans">
+                        {decryptedReportText}
+                      </div>
+
+                      {/* Attachments from Initial Sealed Report */}
+                      {reportAttachments.length > 0 && (
+                        <AttachmentList attachments={reportAttachments} />
+                      )}
                     </div>
                   ) : (
                     <div className="p-4 rounded-xl bg-red-950/20 border border-red-500/30 text-red-300 text-xs">
@@ -379,7 +460,7 @@ export default function InvestigatorPortalPage() {
                         return (
                           <div
                             key={msg.id || idx}
-                            className={`p-3.5 rounded-xl border space-y-1.5 ${
+                            className={`p-3.5 rounded-xl border space-y-2 ${
                               isFromReporter
                                 ? 'bg-amber-950/10 border-amber-900/30'
                                 : 'bg-zinc-900/40 border-zinc-800'
@@ -402,6 +483,11 @@ export default function InvestigatorPortalPage() {
                             <p className="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed font-sans">
                               {msg.decryptedText}
                             </p>
+
+                            {/* Message Attachments */}
+                            {msg.attachments && msg.attachments.length > 0 && (
+                              <AttachmentList attachments={msg.attachments} />
+                            )}
                           </div>
                         );
                       })}
@@ -425,6 +511,13 @@ export default function InvestigatorPortalPage() {
                       required
                     />
                   </div>
+
+                  {/* Attachments Picker */}
+                  <AttachmentPicker
+                    files={replyFiles}
+                    onChange={setReplyFiles}
+                    disabled={isSendingReply}
+                  />
 
                   {actionError && (
                     <div className="p-3 rounded-xl bg-red-950/20 border border-red-500/30 text-red-300 text-xs flex gap-2">

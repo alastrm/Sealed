@@ -54,3 +54,8 @@ scratch/
 context.md
 AGENTS.md
 CLAUDE.md
+
+# Storage and attachments
+storage/
+*.enc
+

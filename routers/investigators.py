@@ -3,8 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from audit_service import record_audit_event
 from database import get_db
-from models import Case, CaseMessage, CaseStatus, Investigator
+from models import AuditEventType, Case, CaseMessage, CaseStatus, Investigator
 from rate_limiter import LIMIT_AUTH, limiter
 from schemas import (
     CaseMessageDto,
@@ -149,6 +150,26 @@ def create_investigator_response(
         sender_type="INVESTIGATOR",
     )
     db.add(message)
+    db.flush()
+
+    record_audit_event(
+        db=db,
+        case_id=case.id,
+        event_type=AuditEventType.MESSAGE_RECEIVED,
+        payload_data={
+            "message_id": message.id,
+            "sender_type": "INVESTIGATOR",
+            "nonce": message.nonce,
+        },
+    )
+    record_audit_event(
+        db=db,
+        case_id=case.id,
+        event_type=AuditEventType.STATUS_CHANGED,
+        payload_data={
+            "new_status": CaseStatus.RESPONDED.value,
+        },
+    )
 
     # Transition case status to RESPONDED
     case.status = CaseStatus.RESPONDED
@@ -157,3 +178,4 @@ def create_investigator_response(
     db.refresh(message)
 
     return CaseMessageDto.model_validate(message)
+

@@ -266,6 +266,66 @@ def run_tests() -> None:
     assert len(padded_short) == len(padded_long), "Padding failed to enforce constant ciphertext size"
     print("[PASS] Test 13: 4KB Constant Padding Invariant (Equal ciphertext size for short and long messages)")
 
+    # Test 14: Zero-Knowledge Evidence Upload & Blind Storage
+    blind_evidence_bytes = b"encrypted_blind_evidence_blob_with_bucket_padding_12345678"
+    files = {"file": ("evidence.enc", blind_evidence_bytes, "application/octet-stream")}
+    data = {"case_id": test_case_id}
+    res = client.post("/api/v1/cases/attachments", files=files, data=data)
+    assert res.status_code == 201, f"Expected 201, got {res.status_code}: {res.text}"
+    att_res = res.json()
+    assert "attachmentId" in att_res
+    assert att_res["sizeBytes"] == len(blind_evidence_bytes)
+    att_id = att_res["attachmentId"]
+
+    # Test 14b: Download Blind Evidence with Anti-XSS and Octet-Stream Headers
+    res = client.get(f"/api/v1/cases/attachments/{att_id}")
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}"
+    assert res.content == blind_evidence_bytes
+    assert res.headers.get("x-content-type-options") == "nosniff", "Missing X-Content-Type-Options: nosniff"
+    assert "application/octet-stream" in res.headers.get("content-type", "")
+    assert 'attachment; filename="evidence.enc"' in res.headers.get("content-disposition", "")
+    print("[PASS] Test 14: Zero-Knowledge Evidence Upload & Anti-XSS Download")
+
+    # Test 14c: Strict 10MB Attachment File Limit (Rejection of oversized blobs)
+    oversized_bytes = b"0" * (10 * 1024 * 1024 + 1)
+    files_oversized = {"file": ("oversized.enc", oversized_bytes, "application/octet-stream")}
+    res = client.post("/api/v1/cases/attachments", files=files_oversized)
+    assert res.status_code == 413, f"Expected 413 Request Entity Too Large, got {res.status_code}"
+    print("[PASS] Test 14c: Strict 10MB Attachment Size Limit Enforced (413 Payload Too Large)")
+
+    # Test 15: Tamper-Evident BLAKE2b Audit Chain Verification
+    res = client.get(f"/api/v1/cases/{test_case_id}/audit-verify")
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.text}"
+    audit_data = res.json()
+    assert audit_data["isValid"] is True, f"Audit chain should be valid, reason: {audit_data.get('reason')}"
+    assert audit_data["eventsCount"] >= 3, f"Expected at least 3 events, got {audit_data['eventsCount']}"
+    assert audit_data["latestHash"] is not None
+    assert audit_data["brokenAt"] is None
+    print(f"[PASS] Test 15: Tamper-evident BLAKE2b Audit Chain Verified ({audit_data['eventsCount']} linked events)")
+
+    # Test 15b: Detection of Retroactive Database Tampering
+    from database import SessionLocal
+    from models import CaseAuditLog
+
+    db = SessionLocal()
+    try:
+        logs = db.query(CaseAuditLog).filter_by(case_id=test_case_id).all()
+        assert len(logs) > 0
+        # Attacker tampers with the first event payload
+        tampered_entry_id = logs[0].id
+        logs[0].payload_hash = "tampered_fake_blake2b_digest_attacker_injection_0000000000000"
+        db.commit()
+    finally:
+        db.close()
+
+    # Re-verify audit chain: backend MUST detect hash collision/break
+    res = client.get(f"/api/v1/cases/{test_case_id}/audit-verify")
+    assert res.status_code == 200
+    tampered_audit = res.json()
+    assert tampered_audit["isValid"] is False, "Audit chain failed to detect database tampering!"
+    assert tampered_audit["brokenAt"] == tampered_entry_id, "brokenAt did not pinpoint the tampered record!"
+    print("[PASS] Test 15b: Retroactive Database Tampering Detected by Audit Hash Chain")
+
     print("==================================================================")
     print("ALL API INTEGRATION TESTS PASSED SUCCESSFULLY!")
     print("==================================================================")

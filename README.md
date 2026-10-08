@@ -48,6 +48,22 @@ This is a pet project built to explore two engineering concepts in practice:
 - Automated IP scrubbing filter in Uvicorn / FastAPI logging: client IP (`client.host`), `X-Forwarded-For`, and `X-Real-IP` are stripped from all stdout/stderr logs.
 - Requests exceeding the limit receive HTTP `429 Too Many Requests` with a `Retry-After` header.
 
+### 6. Zero-Knowledge Evidence Upload & Bucket Padding
+- **Blind Server Storage**: Files are stored as raw ciphertext blobs strictly up to 10 MB (`storage/attachments/`). The server never receives filenames, MIME types, or decryption keys (`CaseAttachment` model stores only `id`, `case_id`, `ciphertext_path`, `size_bytes`, `created_at`).
+- **Bucket Padding**: To defeat file-size traffic analysis fingerprinting, files are padded up to nearest standard bucket boundary (256 KB, 1 MB, 5 MB, 10 MB) via `sodium.pad`.
+- **One-time Symmetric Secretbox**: Each attachment is encrypted in browser memory via `crypto_secretbox_easy` with a fresh 32-byte key (`crypto_secretbox_keygen`).
+- **E2EE Metadata Carrier**: File metadata `{ attachmentId, originalName, mimeType, keyBase64, nonceBase64 }` is sealed strictly inside the end-to-end encrypted report/message payload.
+- **Anti-XSS Safe Download**: Clients download blind binary streams (`Content-Type: application/octet-stream`, `X-Content-Type-Options: nosniff`), decrypt in tab memory, strip bucket padding, and create temporary local object URLs (`createSafeDownloadUrl`) preventing browser script execution.
+
+### 7. Tamper-Evident BLAKE2b Audit Chain
+- Every case mutation is recorded in a cryptographic hash chain (`case_audit_logs` table):
+  - `event_type`: `CASE_CREATED` | `MESSAGE_RECEIVED` | `ATTACHMENT_ADDED` | `STATUS_CHANGED`;
+  - `current_hash = BLAKE2b(prev_event_hash + event_type + payload_hash + created_at)`.
+- Initial entry links to a constant Genesis hash (`0 * 64`).
+- Any retroactive tampering (e.g., editing database records, modifying timestamps, or deleting messages) breaks chain continuity.
+- Verification endpoint (`GET /api/v1/cases/{case_id}/audit-verify`) iterates from Genesis and returns `{ isValid: bool, eventsCount: int, brokenAt: Optional[str] }`.
+- Live visual indicator badge in both investigator dashboard and reporter tracking page proves audit integrity.
+
 ---
 
 ## Architectural Limitations
@@ -69,25 +85,30 @@ Any realistic security assessment of browser-based E2EE must recognize practical
 Sealed/
 ├── backend/ (root directory)
 │   ├── main.py              # FastAPI app setup, middleware, CORS
-│   ├── models.py            # SQLAlchemy 2.0 models (Investigator, Case, CaseMessage)
+│   ├── models.py            # SQLAlchemy 2.0 models (Investigator, Case, CaseMessage, CaseAttachment, CaseAuditLog)
 │   ├── schemas.py           # Pydantic v2 schemas with camelCase aliasing
+│   ├── audit_service.py     # BLAKE2b tamper-evident hash chain & verification service
 │   ├── rate_limiter.py      # SlowAPI rate limiting (5 req/min create, 15 req/min lookup)
 │   ├── logging_config.py    # Zero-knowledge IP stripping for Uvicorn & FastAPI logging
 │   ├── seed.py              # Test investigator seeder
-│   ├── test_api.py          # 13 integration tests covering all flows
+│   ├── test_api.py          # 15 integration tests covering all flows, attachments & audit chain
 │   └── routers/
-│       ├── cases.py         # Reporter endpoints: create, lookup, follow-up messages
+│       ├── cases.py         # Reporter endpoints: create, lookup, blind attachments, audit verification
 │       └── investigators.py # Investigator endpoints: keys, case listing, replies
 ├── frontend/                # Next.js 16 App Router
 │   ├── src/
 │   │   ├── lib/
-│   │   │   ├── crypto.ts    # Libsodium WASM, BIP-39, 4KB padding helpers
+│   │   │   ├── crypto.ts    # Libsodium WASM, BIP-39, bucket padding & secretbox helpers
 │   │   │   ├── api.ts       # Backend REST API client
 │   │   │   └── types.ts     # TypeScript DTO interfaces
+│   │   ├── components/
+│   │   │   ├── AuditBadge.tsx       # BLAKE2b tamper-evident audit status indicator
+│   │   │   ├── AttachmentList.tsx   # In-memory decryption & anti-XSS download component
+│   │   │   └── AttachmentPicker.tsx # Bucket-padded file picker (256KB, 1MB, 5MB, 10MB)
 │   │   └── app/
-│   │       ├── page.tsx          # Submission page (client-side encryption)
-│   │       ├── track/page.tsx    # Case tracking & dialogue (12-word lookup)
-│   │       └── investigator/page.tsx # Investigator dashboard (Argon2id login & thread)
+│   │       ├── page.tsx          # Submission page (client-side encryption & evidence upload)
+│   │       ├── track/page.tsx    # Case tracking & dialogue (audit badge & evidence downloads)
+│   │       └── investigator/page.tsx # Investigator dashboard (audit verification & attachments)
 ├── poc.ts                   # Standalone TypeScript PoC validating the cryptographic lifecycle
 ├── docker-compose.yml       # Multi-container setup (backend + frontend)
 └── Dockerfile               # Production container for FastAPI backend

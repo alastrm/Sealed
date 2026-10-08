@@ -15,11 +15,19 @@ import {
   Terminal,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { encryptReport, generateReporterBundle } from '@/lib/crypto';
+import {
+  encryptAttachmentFile,
+  encryptReport,
+  generateReporterBundle,
+  packMessagePayload,
+} from '@/lib/crypto';
+import type { AttachmentMetadata } from '@/lib/types';
+import { AttachmentPicker } from '@/components/AttachmentPicker';
 
 export default function ReporterHomePage() {
   const router = useRouter();
   const [reportText, setReportText] = useState('');
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,21 +49,49 @@ export default function ReporterHomePage() {
       // 2. Generate 12-word BIP-39 mnemonic & derive secrets
       const { mnemonic, secrets } = await generateReporterBundle();
 
-      // 3. Encrypt report using crypto_box_seal (Anonymous Sealed Box)
-      const encryptedReport = await encryptReport(reportText.trim(), pubKeyData.publicKey);
+      // 3. Process and encrypt all attachments with bucket padding
+      const attachmentsMeta: AttachmentMetadata[] = [];
+      const attachmentIds: string[] = [];
 
-      // 4. Submit to blind backend
+      for (const file of selectedFiles) {
+        const fileBuffer = await file.arrayBuffer();
+        const fileBytes = new Uint8Array(fileBuffer);
+
+        // Encrypt with ephemeral key & apply bucket padding (256KB, 1MB, 5MB, 10MB)
+        const encrypted = await encryptAttachmentFile(
+          fileBytes,
+          file.name,
+          file.type
+        );
+
+        // Upload blind encrypted blob to backend
+        const uploadRes = await api.uploadAttachment(encrypted.fileBlob);
+        encrypted.metadata.attachmentId = uploadRes.attachmentId;
+
+        attachmentsMeta.push(encrypted.metadata);
+        attachmentIds.push(uploadRes.attachmentId);
+      }
+
+      // 4. Pack plaintext with Zero-Knowledge attachment metadata
+      const packedPayload = packMessagePayload(reportText.trim(), attachmentsMeta);
+
+      // 5. Encrypt packed payload using crypto_box_seal (Anonymous Sealed Box)
+      const encryptedReport = await encryptReport(packedPayload, pubKeyData.publicKey);
+
+      // 6. Submit to blind backend with associated attachment IDs
       await api.createCase({
         caseId: crypto.randomUUID(),
         reporterPublicKey: secrets.publicKeyBase64,
         caseAccessTokenHash: secrets.caseAccessTokenHashBase64,
         encryptedReport,
+        attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
       });
 
-      // 5. Store in state & prefill session storage for frictionless track transition
+      // 7. Store in state & prefill session storage for frictionless track transition
       sessionStorage.setItem('sealed_mnemonic', mnemonic);
       setCreatedMnemonic(mnemonic);
       setReportText('');
+      setSelectedFiles([]);
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
@@ -244,6 +280,13 @@ export default function ReporterHomePage() {
             required
           />
         </div>
+
+        {/* Zero-Knowledge Evidence Upload Picker */}
+        <AttachmentPicker
+          files={selectedFiles}
+          onChange={setSelectedFiles}
+          disabled={isSubmitting}
+        />
 
         {error && (
           <div className="p-3.5 rounded-xl border border-red-500/30 bg-red-950/20 text-red-300 text-xs">

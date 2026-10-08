@@ -1,5 +1,7 @@
 import type {
+  AuditVerificationResponse,
   CaseAccessResponseDto,
+  CaseAttachmentUploadResponse,
   CaseCreatedResponse,
   CaseMessageDto,
   CreateCaseDto,
@@ -111,6 +113,57 @@ export const api = {
       body: JSON.stringify(dto),
     });
     return handleResponse<CaseMessageDto>(res);
+  },
+
+  async uploadAttachment(
+    blob: Blob | Uint8Array,
+    caseId?: string,
+    caseAccessTokenHash?: string
+  ): Promise<CaseAttachmentUploadResponse> {
+    const formData = new FormData();
+    const fileBlob =
+      blob instanceof Blob
+        ? blob
+        : new Blob([blob as Uint8Array<ArrayBuffer>], {
+            type: 'application/octet-stream',
+          });
+    formData.append('file', fileBlob, 'evidence.enc');
+    if (caseId) {
+      formData.append('case_id', caseId);
+    }
+    if (caseAccessTokenHash) {
+      formData.append('case_access_token_hash', caseAccessTokenHash);
+    }
+
+    const res = await fetch(`${API_BASE}/api/v1/cases/attachments`, {
+      method: 'POST',
+      body: formData,
+    });
+    return handleResponse<CaseAttachmentUploadResponse>(res);
+  },
+
+  async downloadAttachment(attachmentId: string): Promise<ArrayBuffer> {
+    const res = await fetch(`${API_BASE}/api/v1/cases/attachments/${encodeURIComponent(attachmentId)}`, {
+      cache: 'no-store',
+    });
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const errJson = await res.json();
+        detail = errJson.detail || detail;
+      } catch {
+        // ignore
+      }
+      throw new Error(detail || `Failed to download attachment (HTTP ${res.status})`);
+    }
+    return res.arrayBuffer();
+  },
+
+  async verifyAuditChain(caseId: string): Promise<AuditVerificationResponse> {
+    const res = await fetch(`${API_BASE}/api/v1/cases/${encodeURIComponent(caseId)}/audit-verify`, {
+      cache: 'no-store',
+    });
+    return handleResponse<AuditVerificationResponse>(res);
   },
 };
 

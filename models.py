@@ -14,6 +14,13 @@ class CaseStatus(str, enum.Enum):
     CLOSED = "CLOSED"
 
 
+class AuditEventType(str, enum.Enum):
+    CASE_CREATED = "CASE_CREATED"
+    MESSAGE_RECEIVED = "MESSAGE_RECEIVED"
+    ATTACHMENT_ADDED = "ATTACHMENT_ADDED"
+    STATUS_CHANGED = "STATUS_CHANGED"
+
+
 class Investigator(Base):
     """
     Investigator account record in Zero-Knowledge blind storage.
@@ -74,6 +81,18 @@ class Case(Base):
         cascade="all, delete-orphan",
         order_by="CaseMessage.created_at.asc()",
     )
+    attachments: Mapped[list["CaseAttachment"]] = relationship(
+        "CaseAttachment",
+        back_populates="case",
+        cascade="all, delete-orphan",
+        order_by="CaseAttachment.created_at.asc()",
+    )
+    audit_logs: Mapped[list["CaseAuditLog"]] = relationship(
+        "CaseAuditLog",
+        back_populates="case",
+        cascade="all, delete-orphan",
+        order_by="CaseAuditLog.created_at.asc()",
+    )
 
 
 class CaseMessage(Base):
@@ -114,3 +133,62 @@ class CaseMessage(Base):
     def sender(self, val: str) -> None:
         self.sender_type = val
 
+
+class CaseAttachment(Base):
+    """
+    Blind encrypted evidence attachment.
+    The server stores only the raw ciphertext blob/path and size in bytes.
+    Filenames, MIME types, and decryption keys NEVER exist on the server.
+    """
+    __tablename__ = "case_attachments"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    case_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("cases.id", ondelete="CASCADE"),
+        index=True,
+        nullable=True,
+    )
+    ciphertext_path: Mapped[str] = mapped_column(Text, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    case: Mapped["Case | None"] = relationship("Case", back_populates="attachments")
+
+
+class CaseAuditLog(Base):
+    """
+    Tamper-evident audit log entry in a cryptographic hash-chain.
+    Guarantees non-repudiation and detects retroactive database tampering.
+    """
+    __tablename__ = "case_audit_logs"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True, default=lambda: str(uuid.uuid4())
+    )
+    case_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("cases.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prev_event_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    current_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    case: Mapped["Case"] = relationship("Case", back_populates="audit_logs")

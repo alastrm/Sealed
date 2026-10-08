@@ -18,6 +18,7 @@ export interface CreateCaseDto {
   reporterPublicKey: string;
   caseAccessTokenHash: string;
   encryptedReport: string;
+  attachmentIds?: string[];
 }
 
 export interface CaseCreatedResponse {
@@ -28,6 +29,30 @@ export interface CaseCreatedResponse {
 
 export interface CaseAccessRequestDto {
   caseAccessTokenHash: string;
+}
+
+export interface AttachmentMetadata {
+  attachmentId: string;
+  originalName: string;
+  mimeType: string;
+  keyBase64: string;
+  nonceBase64: string;
+  sizeBytes: number;
+  bucketSize?: number;
+}
+
+export interface CaseAttachmentUploadResponse {
+  attachmentId: string;
+  sizeBytes: number;
+  createdAt: string;
+}
+
+export interface AuditVerificationResponse {
+  isValid: boolean;
+  eventsCount: number;
+  brokenAt: string | null;
+  latestHash: string | null;
+  reason: string | null;
 }
 
 export interface CaseMessageDto {
@@ -41,6 +66,7 @@ export interface CaseMessageDto {
   createdAt: string;
   // Client-decrypted plaintext (optional in UI state)
   decryptedText?: string;
+  attachments?: AttachmentMetadata[];
 }
 
 export interface ReporterReplyDto {

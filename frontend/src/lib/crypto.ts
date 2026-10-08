@@ -13,7 +13,7 @@
 import { Buffer } from 'buffer';
 import * as bip39 from 'bip39';
 import type sodiumType from 'libsodium-wrappers-sumo';
-import type { InvestigatorAccountRecord } from './types';
+import type { AttachmentMetadata, InvestigatorAccountRecord } from './types';
 
 // Ensure Buffer is present in client browser environment
 if (typeof window !== 'undefined') {
@@ -144,7 +144,7 @@ export async function generateReporterBundle(): Promise<{
 }
 
 export const CONSTANT_BLOCK_SIZE = 4096; // 4 KB constant padding against traffic analysis
-export const MAX_PLAINTEXT_BYTES = CONSTANT_BLOCK_SIZE - 16; // 4080 bytes maximum payload per constant block
+export const MAX_PLAINTEXT_BYTES = 64 * 1024; // Up to 64 KB padded payload support
 
 /**
  * Safely removes Libsodium padding, falling back to raw bytes if unpadded.
@@ -397,3 +397,211 @@ export function wipeMemory(...buffers: (Uint8Array | undefined)[]): void {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// Zero-Knowledge Evidence Attachments Primitives
+// ---------------------------------------------------------------------------
+
+export const ATTACHMENT_BUCKET_SIZES = [
+  256 * 1024,      // 256 KB
+  1024 * 1024,     // 1 MB
+  5 * 1024 * 1024,  // 5 MB
+  10 * 1024 * 1024, // 10 MB (strict max limit)
+] as const;
+
+export interface EncryptedAttachmentResult {
+  fileBlob: Blob;
+  metadata: AttachmentMetadata;
+}
+
+/**
+ * Returns the nearest power-bucket size to prevent file size traffic fingerprinting.
+ */
+export function getAttachmentBucketSize(fileSizeBytes: number): number {
+  for (const bucket of ATTACHMENT_BUCKET_SIZES) {
+    if (fileSizeBytes < bucket) {
+      return bucket;
+    }
+  }
+  throw new Error(
+    `Размер файла (${(fileSizeBytes / (1024 * 1024)).toFixed(2)} МБ) превышает максимальный лимит 10 МБ.`
+  );
+}
+
+/**
+ * Client-Side Zero-Knowledge File Encryption:
+ * 1. Generates ephemeral 32-byte symmetric key via crypto_secretbox_keygen
+ * 2. Applies bucket padding (256KB, 1MB, 5MB, 10MB) to disguise file length
+ * 3. Encrypts payload via crypto_secretbox_easy (XSalsa20-Poly1305)
+ * 4. Returns encrypted binary Blob and metadata dictionary (metadata is only encrypted inside message)
+ */
+export async function encryptAttachmentFile(
+  fileBytes: Uint8Array,
+  originalName: string,
+  mimeType: string
+): Promise<EncryptedAttachmentResult> {
+  const s = await initCrypto();
+
+  const bucketSize = getAttachmentBucketSize(fileBytes.length);
+  const paddedBytes = s.pad(fileBytes, bucketSize);
+
+  // 1. Generate one-time symmetric secret key and nonce
+  const key = s.crypto_secretbox_keygen();
+  const nonce = s.randombytes_buf(s.crypto_secretbox_NONCEBYTES);
+
+  // 2. Encrypt padded payload
+  const ciphertext = s.crypto_secretbox_easy(paddedBytes, nonce, key, 'uint8array');
+
+  const attachmentId =
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : 'att-' + s.to_hex(s.randombytes_buf(16));
+
+  const metadata: AttachmentMetadata = {
+    attachmentId,
+    originalName: originalName || 'evidence.bin',
+    mimeType: mimeType || 'application/octet-stream',
+    keyBase64: s.to_base64(key, s.base64_variants.ORIGINAL),
+    nonceBase64: s.to_base64(nonce, s.base64_variants.ORIGINAL),
+    sizeBytes: fileBytes.length,
+    bucketSize,
+  };
+
+  // Securely wipe ephemeral key buffer from memory
+  s.memzero(key);
+
+  const fileBlob = new Blob([ciphertext as Uint8Array<ArrayBuffer>], {
+    type: 'application/octet-stream',
+  });
+
+  return { fileBlob, metadata };
+}
+
+/**
+ * Decrypts a blind evidence blob in browser tab memory:
+ * 1. Decrypts via crypto_secretbox_open_easy with symmetric key from message
+ * 2. Strips bucket padding
+ * 3. Wipes key material
+ */
+export async function decryptAttachmentFile(
+  ciphertextBytes: Uint8Array,
+  keyBase64: string,
+  nonceBase64: string,
+  bucketSize?: number
+): Promise<Uint8Array> {
+  const s = await initCrypto();
+  const key = s.from_base64(keyBase64, s.base64_variants.ORIGINAL);
+  const nonce = s.from_base64(nonceBase64, s.base64_variants.ORIGINAL);
+
+  let decryptedPadded: Uint8Array;
+  try {
+    decryptedPadded = s.crypto_secretbox_open_easy(
+      ciphertextBytes,
+      nonce,
+      key,
+      'uint8array'
+    );
+  } catch {
+    throw new Error('Не удалось расшифровать вложение: неверный ключ или повреждённые данные.');
+  } finally {
+    s.memzero(key);
+  }
+
+  // Attempt bucket unpadding
+  if (bucketSize) {
+    try {
+      return s.unpad(decryptedPadded, bucketSize);
+    } catch {
+      // Fallback to checking each standard bucket
+    }
+  }
+
+  for (const bucket of ATTACHMENT_BUCKET_SIZES) {
+    try {
+      return s.unpad(decryptedPadded, bucket);
+    } catch {
+      // Continue search
+    }
+  }
+
+  return decryptedPadded;
+}
+
+/**
+ * Safely creates an object URL for a decrypted blob.
+ * Prevents Stored XSS by avoiding execution of active HTML/SVG payloads in context.
+ */
+export function createSafeDownloadUrl(fileBytes: Uint8Array, mimeType: string): string {
+  const isDangerous =
+    /html|xml|svg|javascript|ecmascript|shockwave/i.test(mimeType) ||
+    !mimeType ||
+    mimeType === 'text/plain';
+
+  const safeMime = isDangerous ? 'application/octet-stream' : mimeType;
+  const blob = new Blob([fileBytes as Uint8Array<ArrayBuffer>], { type: safeMime });
+  return URL.createObjectURL(blob);
+}
+
+/**
+ * Initiates safe browser download of decrypted attachment file.
+ */
+export function triggerSafeDownload(
+  fileBytes: Uint8Array,
+  fileName: string,
+  mimeType: string
+): void {
+  const safeUrl = createSafeDownloadUrl(fileBytes, mimeType);
+  const link = document.createElement('a');
+  link.href = safeUrl;
+  link.download = fileName || 'decrypted_evidence.bin';
+  link.rel = 'noopener noreferrer';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(safeUrl), 10000);
+}
+
+/**
+ * Packages human-readable message text together with zero-knowledge attachments metadata.
+ */
+export function packMessagePayload(
+  text: string,
+  attachments?: AttachmentMetadata[]
+): string {
+  if (!attachments || attachments.length === 0) {
+    return text;
+  }
+  return JSON.stringify({
+    text: text || '',
+    attachments,
+  });
+}
+
+/**
+ * Parses decrypted payload string into human-readable text and zero-knowledge attachments metadata.
+ */
+export function parseMessageContent(rawText: string): {
+  text: string;
+  attachments: AttachmentMetadata[];
+} {
+  try {
+    const trimmed = (rawText || '').trim();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      const parsed = JSON.parse(trimmed);
+      if (
+        typeof parsed === 'object' &&
+        parsed !== null &&
+        ('text' in parsed || 'attachments' in parsed)
+      ) {
+        return {
+          text: typeof parsed.text === 'string' ? parsed.text : '',
+          attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
+        };
+      }
+    }
+  } catch {
+    // Plain text message
+  }
+  return { text: rawText, attachments: [] };
+}
+
