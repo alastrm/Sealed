@@ -7,9 +7,9 @@ export default function Navbar() {
   const pathname = usePathname();
 
   const links = [
-    { href: '/', label: 'Подать отчёт' },
-    { href: '/track', label: 'Проверить статус' },
-    { href: '/investigator', label: 'Следователь' },
+    { href: '/', label: 'Submit' },
+    { href: '/track', label: 'Track' },
+    { href: '/investigator', label: 'Investigator' },
   ];
 
   return (

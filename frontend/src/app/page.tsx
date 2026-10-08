@@ -81,8 +81,8 @@ export default function ReporterHomePage() {
       setSelectedFiles([]);
     } catch (err: unknown) {
       console.error(err);
-      const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
-      setError(msg || 'Ошибка при отправке обращения.');
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      setError(msg || 'Failed to submit report. Please check if backend is running.');
     } finally {
       setIsSubmitting(false);
     }
@@ -110,10 +110,10 @@ export default function ReporterHomePage() {
       <div className="space-y-6 animate-in fade-in duration-200">
         <div className="space-y-2">
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-            Ключ доступа
+            Access Key
           </h1>
           <p className="text-sm font-light text-zinc-400 leading-relaxed">
-            Сохраните эти 12 слов. Это единственный ключ для проверки ответа или продолжения диалога.
+            Save these 12 words. It is the only way to read replies or follow up.
           </p>
         </div>
 
@@ -138,12 +138,12 @@ export default function ReporterHomePage() {
               {copied ? (
                 <>
                   <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Скопировано</span>
+                  <span>Copied</span>
                 </>
               ) : (
                 <>
                   <Copy className="w-3.5 h-3.5 text-zinc-400" />
-                  <span>Скопировать слова</span>
+                  <span>Copy words</span>
                 </>
               )}
             </button>
@@ -152,7 +152,7 @@ export default function ReporterHomePage() {
               onClick={handleGoToTrack}
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] text-xs font-medium hover:bg-white transition-colors cursor-pointer"
             >
-              <span>Перейти к диалогу</span>
+              <span>Open conversation</span>
               <ArrowRight className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -166,10 +166,10 @@ export default function ReporterHomePage() {
     <div className="space-y-6 animate-in fade-in duration-200">
       <div className="space-y-2">
         <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-          Анонимный ящик доверия
+          Anonymous Drop
         </h1>
         <p className="text-sm font-light text-zinc-400 leading-relaxed">
-          Сообщение шифруется в браузере до отправки. Сервер не имеет доступа к содержимому.
+          Encrypted in your browser before sending. The server never sees plaintext.
         </p>
       </div>
 
@@ -180,7 +180,7 @@ export default function ReporterHomePage() {
             rows={8}
             value={reportText}
             onChange={(e) => setReportText(e.target.value)}
-            placeholder="Опишите ситуацию: факты, даты, вовлечённые лица..."
+            placeholder="Describe the incident: facts, dates, entities involved..."
             className="w-full rounded-lg bg-neutral-900/60 border border-white/10 px-4 py-3.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/20 transition-colors font-sans resize-y leading-relaxed"
             required
           />
@@ -200,7 +200,7 @@ export default function ReporterHomePage() {
 
         <div className="flex items-center justify-between pt-2">
           <span className="text-xs text-zinc-500 font-mono">
-            {reportText.length > 0 ? `${reportText.length} симв.` : ''}
+            {reportText.length > 0 ? `${reportText.length} chars` : ''}
           </span>
 
           <button
@@ -211,10 +211,10 @@ export default function ReporterHomePage() {
             {isSubmitting ? (
               <>
                 <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0a0a0a]" />
-                <span>Шифрование...</span>
+                <span>Encrypting...</span>
               </>
             ) : (
-              <span>Отправить отчёт</span>
+              <span>Submit report</span>
             )}
           </button>
         </div>

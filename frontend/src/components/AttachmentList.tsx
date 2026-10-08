@@ -11,7 +11,7 @@ interface AttachmentListProps {
   title?: string;
 }
 
-export function AttachmentList({ attachments, title = 'Вложения:' }: AttachmentListProps) {
+export function AttachmentList({ attachments, title = 'Attachments:' }: AttachmentListProps) {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
@@ -20,9 +20,9 @@ export function AttachmentList({ attachments, title = 'Вложения:' }: Att
   }
 
   function formatBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} Б`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} МБ`;
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   }
 
   async function handleDownload(att: AttachmentMetadata) {
@@ -43,7 +43,7 @@ export function AttachmentList({ attachments, title = 'Вложения:' }: Att
       triggerSafeDownload(decryptedBytes, att.originalName, att.mimeType);
     } catch (err: unknown) {
       console.error(err);
-      const msg = err instanceof Error ? err.message : 'Не удалось расшифровать файл';
+      const msg = err instanceof Error ? err.message : 'Failed to decrypt file';
       setDownloadError(msg);
     } finally {
       setDownloadingId(null);
@@ -86,7 +86,7 @@ export function AttachmentList({ attachments, title = 'Вложения:' }: Att
                 onClick={() => handleDownload(att)}
                 disabled={isDownloading}
                 className="text-zinc-400 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
-                title="Скачать файл"
+                title="Download file"
               >
                 {isDownloading ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />

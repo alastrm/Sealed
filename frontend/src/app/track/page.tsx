@@ -61,25 +61,25 @@ export default function TrackCasePage() {
         return (
           <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">
             <Clock className="w-3.5 h-3.5 text-zinc-500" />
-            <span>Ожидает ответа</span>
+            <span>Awaiting reply</span>
           </span>
         );
       case 'RESPONDED':
         return (
           <span className="inline-flex items-center gap-1.5 text-xs text-emerald-400">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-            <span>Получен ответ</span>
+            <span>Replied</span>
           </span>
         );
       case 'IN_REVIEW':
         return (
           <span className="inline-flex items-center gap-1.5 text-xs text-zinc-400">
             <Clock className="w-3.5 h-3.5 text-zinc-500" />
-            <span>В обработке</span>
+            <span>In review</span>
           </span>
         );
       case 'CLOSED':
-        return <span className="text-xs text-zinc-500">Закрыт</span>;
+        return <span className="text-xs text-zinc-500">Closed</span>;
       default:
         return <span className="text-xs text-zinc-400">{status}</span>;
     }
@@ -89,10 +89,10 @@ export default function TrackCasePage() {
     <div className="space-y-6 animate-in fade-in duration-200">
       <div className="space-y-2">
         <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-          Проверить статус
+          Track Status
         </h1>
         <p className="text-sm font-light text-zinc-400 leading-relaxed">
-          Введите 12 слов, полученных при отправке обращения.
+          Enter the 12 words from your submission to read responses or follow up.
         </p>
       </div>
 
@@ -106,7 +106,7 @@ export default function TrackCasePage() {
               setMnemonicInput(e.target.value);
               setFromSession(false);
             }}
-            placeholder="например: abandon ability able about above absent absorb abstract absurd abuse access accident"
+            placeholder="e.g. abandon ability able about above absent absorb abstract absurd abuse access accident"
             className="w-full rounded-lg bg-neutral-900/60 border border-white/10 px-4 py-3 text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/20 transition-colors resize-y leading-relaxed"
             required
           />
@@ -125,7 +125,7 @@ export default function TrackCasePage() {
                 wordCount === 12 ? 'text-emerald-400' : 'text-zinc-500'
               }`}
             >
-              {wordCount} / 12 слов
+              {wordCount} / 12 words
             </span>
 
             {fromSession && (
@@ -134,7 +134,7 @@ export default function TrackCasePage() {
                 onClick={clearSession}
                 className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
               >
-                Очистить
+                Clear
               </button>
             )}
           </div>
@@ -147,10 +147,10 @@ export default function TrackCasePage() {
             {isVerifying ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin text-[#0a0a0a]" />
-                <span>Проверка...</span>
+                <span>Checking...</span>
               </>
             ) : (
-              <span>Проверить статус</span>
+              <span>Check status</span>
             )}
           </button>
         </div>
@@ -161,11 +161,11 @@ export default function TrackCasePage() {
         <div className="space-y-6 pt-6 border-t border-white/5 animate-in fade-in duration-300">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-zinc-400">
             <div className="flex items-center gap-3">
-              <span>Статус:</span>
+              <span>Status:</span>
               {getStatusBadge(caseData.status)}
             </div>
             <div className="text-zinc-500 font-mono">
-              Создано: {new Date(caseData.createdAt).toLocaleDateString('ru-RU')}
+              Created: {new Date(caseData.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
             </div>
           </div>
 
@@ -179,20 +179,20 @@ export default function TrackCasePage() {
           <div className="space-y-4 pt-2">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-medium text-white">
-                Сообщения ({decryptedMessages.length})
+                Messages ({decryptedMessages.length})
               </h2>
               <button
                 onClick={() => handleLookup()}
                 className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>Обновить</span>
+                <span>Refresh</span>
               </button>
             </div>
 
             {decryptedMessages.length === 0 ? (
               <div className="p-6 text-center text-xs text-zinc-500 font-mono">
-                Ответов пока нет. Проверьте обращение позже.
+                No replies yet. Check back later.
               </div>
             ) : (
               <div className="space-y-3">
@@ -205,10 +205,10 @@ export default function TrackCasePage() {
                     >
                       <div className="flex items-center justify-between text-xs pb-1.5 border-b border-white/5">
                         <span className="font-medium text-zinc-200">
-                          {isMe ? 'Вы (репортёр)' : 'Следователь'}
+                          {isMe ? 'You (Reporter)' : 'Investigator'}
                         </span>
                         <span className="font-mono text-[11px] text-zinc-500">
-                          {new Date(msg.createdAt).toLocaleString('ru-RU')}
+                          {new Date(msg.createdAt).toLocaleString('en-US')}
                         </span>
                       </div>
 
@@ -232,7 +232,7 @@ export default function TrackCasePage() {
                 rows={3}
                 value={replyText}
                 onChange={(e) => setReplyText(e.target.value)}
-                placeholder="Напишите ответ следователю..."
+                placeholder="Write a follow-up reply..."
                 className="w-full rounded-lg bg-neutral-900/60 border border-white/10 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/20 transition-colors font-sans resize-y leading-relaxed"
                 required
               />
@@ -258,11 +258,11 @@ export default function TrackCasePage() {
                   {isSendingReply ? (
                     <>
                       <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0a0a0a]" />
-                      <span>Шифрование...</span>
+                      <span>Encrypting...</span>
                     </>
                   ) : (
                     <>
-                      <span>Отправить ответ</span>
+                      <span>Send reply</span>
                       <Send className="w-3.5 h-3.5" />
                     </>
                   )}

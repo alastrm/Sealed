@@ -19,8 +19,8 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "SEALED — Анонимный ящик доверия",
-  description: "End-to-end encrypted anonymous whistleblower platform.",
+  title: "SEALED — Anonymous Whistleblower Drop",
+  description: "End-to-end encrypted report drop. Client-side encryption with Libsodium and BIP-39.",
 };
 
 export default function RootLayout({
@@ -29,7 +29,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ru" className="dark">
+    <html lang="en" className="dark">
       <body
         className={`${ibmPlexSans.variable} ${ibmPlexMono.variable} min-h-screen bg-[#0a0a0a] text-[#ededed] flex flex-col font-sans antialiased selection:bg-white/20 selection:text-white relative`}
       >
@@ -41,7 +41,7 @@ export default function RootLayout({
         <footer className="py-8 text-xs text-zinc-500 relative z-10 border-t border-white/5">
           <div className="max-w-2xl mx-auto px-6 flex items-center justify-between text-zinc-500 text-xs">
             <span>SEALED</span>
-            <span>Zero-Knowledge Relay</span>
+            <span>Anonymous Drop</span>
           </div>
         </footer>
       </body>

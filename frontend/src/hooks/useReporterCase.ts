@@ -155,7 +155,7 @@ export function useReporterCase() {
             } catch {
               return {
                 ...msg,
-                decryptedText: '[Ошибка расшифровки: сообщение повреждено или не адресовано вам]',
+                decryptedText: '[Decryption failed: corrupted or not addressed to you]',
                 attachments: [],
               };
             }
@@ -167,11 +167,11 @@ export function useReporterCase() {
         console.error(err);
         const errMsg = err instanceof Error ? err.message : '';
         if (errMsg.includes('404') || errMsg.includes('не найдено')) {
-          setError('Обращение с такой мнемонической фразой не найдено. Проверьте правильность введённых 12 слов.');
+          setError('No case found for this phrase. Check the 12 words.');
         } else if (errMsg.includes('Invalid 12-word BIP-39')) {
-          setError('Некорректная мнемоническая фраза BIP-39. Убедитесь, что все 12 английских слов написаны правильно.');
+          setError('Invalid 12-word BIP-39 phrase. Check your word spelling.');
         } else {
-          setError(errMsg || 'Ошибка при запросе к серверу.');
+          setError(errMsg || 'Server request failed.');
         }
       } finally {
         setIsVerifying(false);
@@ -240,7 +240,7 @@ export function useReporterCase() {
       } catch (err: unknown) {
         console.error(err);
         const msg = err instanceof Error ? err.message : '';
-        setReplyError(msg || 'Не удалось отправить ответ следователю.');
+        setReplyError(msg || 'Failed to send reply.');
         return false;
       } finally {
         setIsSendingReply(false);

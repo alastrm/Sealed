@@ -91,7 +91,7 @@ export function useInvestigatorSession() {
       setCases(list);
     } catch (err: unknown) {
       console.error(err);
-      setActionError('Не удалось загрузить список кейсов с сервера.');
+      setActionError('Failed to load cases from server.');
     } finally {
       setIsLoadingCases(false);
     }
@@ -123,7 +123,7 @@ export function useInvestigatorSession() {
       } catch (err: unknown) {
         console.error(err);
         const msg = err instanceof Error ? err.message : '';
-        setLoginError(msg || 'Ошибка входа: неверный пароль или не найден аккаунт.');
+        setLoginError(msg || 'Login failed: invalid password or account.');
         return false;
       } finally {
         setIsUnlocking(false);
@@ -178,7 +178,7 @@ export function useInvestigatorSession() {
             } catch {
               return {
                 ...msg,
-                decryptedText: '[Ошибка расшифровки сообщения: неверный ключ или данные]',
+                decryptedText: '[Decryption failed: invalid key or data]',
                 attachments: [],
               };
             }
@@ -187,7 +187,7 @@ export function useInvestigatorSession() {
         setThreadMessages(decrypted);
       } catch (err: unknown) {
         console.error(err);
-        setActionError('Ошибка расшифровки Sealed Box сообщения: повреждённые данные.');
+        setActionError('Failed to decrypt report: corrupted data.');
       } finally {
         setIsDecryptingReport(false);
         setIsLoadingThread(false);
@@ -256,7 +256,7 @@ export function useInvestigatorSession() {
       } catch (err: unknown) {
         console.error(err);
         const msg = err instanceof Error ? err.message : '';
-        setActionError(msg || 'Ошибка отправки ответа.');
+        setActionError(msg || 'Failed to send reply.');
         return false;
       } finally {
         setIsSendingReply(false);

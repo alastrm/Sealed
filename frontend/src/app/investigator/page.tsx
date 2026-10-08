@@ -84,7 +84,7 @@ export default function InvestigatorPortalPage() {
           <div className="space-y-0.5">
             <div className="text-sm font-medium text-white flex items-center gap-2">
               <span>{account.username}</span>
-              <span className="text-xs text-emerald-400 font-mono">• ключ разблокирован</span>
+              <span className="text-xs text-emerald-400 font-mono">• key unlocked</span>
             </div>
             <p className="text-xs text-zinc-500 font-mono truncate max-w-sm sm:max-w-md">
               {account.publicKey}
@@ -98,14 +98,14 @@ export default function InvestigatorPortalPage() {
               className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isLoadingCases ? 'animate-spin' : ''}`} />
-              <span>Обновить</span>
+              <span>Refresh</span>
             </button>
             <button
               onClick={logout}
               className="inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-red-400 transition-colors cursor-pointer"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>Заблокировать</span>
+              <span>Lock</span>
             </button>
           </div>
         </div>
@@ -115,13 +115,13 @@ export default function InvestigatorPortalPage() {
           {/* Left Column: Cases List */}
           <div className="md:col-span-5 space-y-2">
             <div className="text-xs text-zinc-400 font-medium pb-2 flex items-center justify-between">
-              <span>Обращения ({cases.length})</span>
+              <span>Reports ({cases.length})</span>
               {isLoadingCases && <Loader2 className="w-3 h-3 text-zinc-500 animate-spin" />}
             </div>
 
             {cases.length === 0 ? (
               <div className="py-8 text-center text-xs text-zinc-500">
-                {isLoadingCases ? 'Загрузка...' : 'Обращений нет.'}
+                {isLoadingCases ? 'Loading...' : 'No reports yet.'}
               </div>
             ) : (
               <div className="space-y-1.5 max-h-[500px] overflow-y-auto pr-1">
@@ -147,8 +147,8 @@ export default function InvestigatorPortalPage() {
                       </div>
 
                       <div className="flex items-center justify-between text-[11px] text-zinc-500 font-mono">
-                        <span>{new Date(c.createdAt).toLocaleDateString('ru-RU')}</span>
-                        <span>{c.messageCount} отв.</span>
+                        <span>{new Date(c.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                        <span>{c.messageCount} msg</span>
                       </div>
                     </div>
                   );
@@ -162,7 +162,7 @@ export default function InvestigatorPortalPage() {
             {!selectedCase ? (
               <div className="py-16 text-center text-xs text-zinc-500 space-y-2">
                 <FileText className="w-6 h-6 mx-auto text-zinc-600" />
-                <p>Выберите обращение из списка слева.</p>
+                <p>Select a report from the list.</p>
               </div>
             ) : (
               <div className="space-y-5">
@@ -179,11 +179,11 @@ export default function InvestigatorPortalPage() {
 
                 {/* Decrypted Report */}
                 <div className="space-y-2">
-                  <div className="text-xs text-zinc-400 font-medium">Текст обращения:</div>
+                  <div className="text-xs text-zinc-400 font-medium">Report content:</div>
                   {isDecryptingReport ? (
                     <div className="p-6 text-center text-xs text-zinc-500 flex items-center justify-center gap-2">
                       <Loader2 className="w-4 h-4 animate-spin text-zinc-500" />
-                      <span>Расшифровка...</span>
+                      <span>Decrypting...</span>
                     </div>
                   ) : decryptedReportText ? (
                     <div className="space-y-2">
@@ -196,7 +196,7 @@ export default function InvestigatorPortalPage() {
                     </div>
                   ) : (
                     <div className="p-3 text-xs text-red-300">
-                      Не удалось расшифровать сообщение.
+                      Failed to decrypt report.
                     </div>
                   )}
                 </div>
@@ -205,7 +205,7 @@ export default function InvestigatorPortalPage() {
                 {threadMessages.length > 0 && (
                   <div className="space-y-3 pt-3 border-t border-white/5">
                     <div className="text-xs text-zinc-400 font-medium">
-                      История переписки ({threadMessages.length})
+                      Message thread ({threadMessages.length})
                     </div>
                     <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
                       {threadMessages.map((msg, idx) => {
@@ -217,10 +217,10 @@ export default function InvestigatorPortalPage() {
                           >
                             <div className="flex items-center justify-between text-xs">
                               <span className="font-medium text-zinc-300">
-                                {isFromReporter ? 'Репортёр' : 'Следователь (Вы)'}
+                                {isFromReporter ? 'Reporter' : 'Investigator (You)'}
                               </span>
                               <span className="text-[11px] text-zinc-500 font-mono">
-                                {new Date(msg.createdAt).toLocaleString('ru-RU')}
+                                {new Date(msg.createdAt).toLocaleString('en-US')}
                               </span>
                             </div>
                             <p className="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed font-sans">
@@ -240,14 +240,14 @@ export default function InvestigatorPortalPage() {
                 <form onSubmit={handleSendReply} className="space-y-3 pt-3 border-t border-white/5">
                   <div className="space-y-1.5">
                     <label htmlFor="reply" className="text-xs text-zinc-400 font-medium block">
-                      Ответ репортёру:
+                      Reply to reporter:
                     </label>
                     <textarea
                       id="reply"
                       rows={4}
                       value={replyText}
                       onChange={(e) => setReplyText(e.target.value)}
-                      placeholder="Введите текст ответа..."
+                      placeholder="Type your response..."
                       className="w-full rounded-lg bg-neutral-900/60 border border-white/10 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/20 transition-colors resize-y leading-relaxed font-sans"
                       required
                     />
@@ -269,7 +269,7 @@ export default function InvestigatorPortalPage() {
                   {replySuccess && (
                     <div className="p-3 rounded-lg border border-emerald-500/20 bg-emerald-950/20 text-emerald-300 text-xs flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-emerald-400" />
-                      <span>Ответ зашифрован и отправлен.</span>
+                      <span>Reply encrypted and sent.</span>
                     </div>
                   )}
 
@@ -282,11 +282,11 @@ export default function InvestigatorPortalPage() {
                       {isSendingReply ? (
                         <>
                           <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0a0a0a]" />
-                          <span>Шифрование...</span>
+                          <span>Encrypting...</span>
                         </>
                       ) : (
                         <>
-                          <span>Отправить ответ</span>
+                          <span>Send reply</span>
                           <Send className="w-3.5 h-3.5" />
                         </>
                       )}
@@ -308,17 +308,17 @@ export default function InvestigatorPortalPage() {
     <div className="max-w-md mx-auto space-y-6 pt-4 animate-in fade-in duration-200">
       <div className="space-y-2">
         <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-          Кабинет следователя
+          Investigator Portal
         </h1>
         <p className="text-sm font-light text-zinc-400 leading-relaxed">
-          Вход и локальная расшифровка обращений.
+          Sign in to decrypt incoming reports locally.
         </p>
       </div>
 
       <form onSubmit={handleLogin} className="space-y-4 pt-2">
         <div className="space-y-1.5">
           <label htmlFor="username" className="block text-xs text-zinc-400">
-            Email или логин
+            Email or username
           </label>
           <input
             id="username"
@@ -332,7 +332,7 @@ export default function InvestigatorPortalPage() {
 
         <div className="space-y-1.5">
           <label htmlFor="password" className="block text-xs text-zinc-400">
-            Пароль
+            Password
           </label>
           <input
             id="password"
@@ -362,12 +362,12 @@ export default function InvestigatorPortalPage() {
           {isUnlocking ? (
             <>
               <Loader2 className="w-4 h-4 animate-spin text-[#0a0a0a]" />
-              <span>Расшифровка ключа...</span>
+              <span>Unlocking key...</span>
             </>
           ) : (
             <>
               <Unlock className="w-4 h-4" />
-              <span>Войти</span>
+              <span>Sign in</span>
             </>
           )}
         </button>

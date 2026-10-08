@@ -14,9 +14,9 @@ export function AttachmentPicker({ files, onChange, disabled }: AttachmentPicker
   const inputRef = useRef<HTMLInputElement>(null);
 
   function formatBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} Б`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   }
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -26,7 +26,7 @@ export function AttachmentPicker({ files, onChange, disabled }: AttachmentPicker
 
     for (const file of selected) {
       if (file.size >= ATTACHMENT_BUCKET_SIZES[ATTACHMENT_BUCKET_SIZES.length - 1]) {
-        alert(`Файл "${file.name}" превышает лимит 10 МБ.`);
+        alert(`File "${file.name}" exceeds the 10 MB limit.`);
         continue;
       }
       valid.push(file);
@@ -61,10 +61,10 @@ export function AttachmentPicker({ files, onChange, disabled }: AttachmentPicker
           className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
         >
           <Paperclip className="w-3.5 h-3.5" />
-          <span>Прикрепить вложение</span>
+          <span>Attach files</span>
         </button>
 
-        <span className="text-[11px] text-zinc-500 font-mono">до 10 МБ</span>
+        <span className="text-[11px] text-zinc-500 font-mono">up to 10 MB</span>
       </div>
 
       {files.length > 0 && (
@@ -81,6 +81,7 @@ export function AttachmentPicker({ files, onChange, disabled }: AttachmentPicker
                 onClick={() => handleRemove(idx)}
                 disabled={disabled}
                 className="text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+                title="Remove file"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
