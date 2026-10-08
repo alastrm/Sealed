@@ -2,18 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  Lock,
-  Copy,
-  Check,
-  ArrowRight,
-  ShieldAlert,
-  Loader2,
-  RefreshCw,
-  EyeOff,
-  Database,
-  Terminal,
-} from 'lucide-react';
+import { Copy, Check, ArrowRight, Loader2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
   encryptAttachmentFile,
@@ -49,7 +38,7 @@ export default function ReporterHomePage() {
       // 2. Generate 12-word BIP-39 mnemonic & derive secrets
       const { mnemonic, secrets } = await generateReporterBundle();
 
-      // 3. Process and encrypt all attachments with bucket padding
+      // 3. Process and encrypt all attachments
       const attachmentsMeta: AttachmentMetadata[] = [];
       const attachmentIds: string[] = [];
 
@@ -57,14 +46,12 @@ export default function ReporterHomePage() {
         const fileBuffer = await file.arrayBuffer();
         const fileBytes = new Uint8Array(fileBuffer);
 
-        // Encrypt with ephemeral key & apply bucket padding (256KB, 1MB, 5MB, 10MB)
         const encrypted = await encryptAttachmentFile(
           fileBytes,
           file.name,
           file.type
         );
 
-        // Upload blind encrypted blob to backend
         const uploadRes = await api.uploadAttachment(encrypted.fileBlob);
         encrypted.metadata.attachmentId = uploadRes.attachmentId;
 
@@ -72,13 +59,13 @@ export default function ReporterHomePage() {
         attachmentIds.push(uploadRes.attachmentId);
       }
 
-      // 4. Pack plaintext with Zero-Knowledge attachment metadata
+      // 4. Pack plaintext with attachment metadata
       const packedPayload = packMessagePayload(reportText.trim(), attachmentsMeta);
 
-      // 5. Encrypt packed payload using crypto_box_seal (Anonymous Sealed Box)
+      // 5. Encrypt packed payload using crypto_box_seal
       const encryptedReport = await encryptReport(packedPayload, pubKeyData.publicKey);
 
-      // 6. Submit to blind backend with associated attachment IDs
+      // 6. Submit to backend
       await api.createCase({
         caseId: crypto.randomUUID(),
         reporterPublicKey: secrets.publicKeyBase64,
@@ -87,7 +74,7 @@ export default function ReporterHomePage() {
         attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
       });
 
-      // 7. Store in state & prefill session storage for frictionless track transition
+      // 7. Store in session & set state
       sessionStorage.setItem('sealed_mnemonic', mnemonic);
       setCreatedMnemonic(mnemonic);
       setReportText('');
@@ -95,7 +82,7 @@ export default function ReporterHomePage() {
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : 'Неизвестная ошибка';
-      setError(msg || 'Ошибка при отправке обращения. Убедитесь, что бэкенд запущен.');
+      setError(msg || 'Ошибка при отправке обращения.');
     } finally {
       setIsSubmitting(false);
     }
@@ -122,27 +109,31 @@ export default function ReporterHomePage() {
     return (
       <div className="space-y-6 animate-in fade-in duration-200">
         <div className="space-y-2">
-          <div className="flex items-center gap-2 text-xs font-mono text-emerald-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span>Шифрование завершено • Отчёт отправлен</span>
-          </div>
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-[#ededed]">
-            Ключ доступа <span className="font-light text-zinc-500">— 12 слов BIP-39</span>
+          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
+            Ключ доступа
           </h1>
-          <p className="text-sm font-light text-zinc-400 leading-relaxed max-w-2xl">
-            Сервер сохранил зашифрованный блок и не знает вашего имени, IP или текста. Сохраните мнемонику: это ваш единственный ключ для проверки статуса и расшифровки ответов.
+          <p className="text-sm font-light text-zinc-400 leading-relaxed">
+            Сохраните эти 12 слов. Это единственный ключ для проверки ответа или продолжения диалога.
           </p>
         </div>
 
-        {/* 12 Words Box */}
-        <div className="border border-white/[0.08] bg-[#0e0e0e]/80 rounded-lg p-5 space-y-4">
-          <div className="flex items-center justify-between pb-3 border-b border-white/[0.06]">
-            <span className="text-[11px] font-mono text-zinc-500 uppercase tracking-wider">
-              Mnemonic Seed (128-bit entropy)
-            </span>
+        <div className="space-y-4 pt-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {words.map((word, idx) => (
+              <div
+                key={idx}
+                className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-neutral-900/50 border border-white/5 font-mono text-xs select-all"
+              >
+                <span className="text-zinc-600 w-4 text-right">{idx + 1}.</span>
+                <span className="text-zinc-200 font-medium">{word}</span>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-3 pt-2">
             <button
               onClick={handleCopyMnemonic}
-              className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] text-zinc-300 hover:text-white hover:bg-white/[0.08] transition-colors"
+              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-xs text-zinc-300 transition-colors border border-white/5 cursor-pointer"
             >
               {copied ? (
                 <>
@@ -152,45 +143,19 @@ export default function ReporterHomePage() {
               ) : (
                 <>
                   <Copy className="w-3.5 h-3.5 text-zinc-400" />
-                  <span>Копировать</span>
+                  <span>Скопировать слова</span>
                 </>
               )}
             </button>
-          </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {words.map((word, idx) => (
-              <div
-                key={idx}
-                className="flex items-center gap-2 px-3 py-2 rounded-md bg-black/60 border border-white/[0.06] select-all font-mono"
-              >
-                <span className="text-[11px] text-zinc-600 w-4 text-right">
-                  {idx + 1}.
-                </span>
-                <span className="text-xs text-zinc-200 font-medium">
-                  {word}
-                </span>
-              </div>
-            ))}
+            <button
+              onClick={handleGoToTrack}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] text-xs font-medium hover:bg-white transition-colors cursor-pointer"
+            >
+              <span>Перейти к диалогу</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
           </div>
-        </div>
-
-        {/* Actions */}
-        <div className="flex items-center gap-3 pt-2">
-          <button
-            onClick={handleGoToTrack}
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] text-xs sm:text-sm font-medium hover:bg-white transition-opacity"
-          >
-            <span>Перейти к переписке</span>
-            <ArrowRight className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setCreatedMnemonic(null)}
-            className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 hover:bg-white/[0.04] transition-colors"
-          >
-            <RefreshCw className="w-3.5 h-3.5 text-zinc-500" />
-            <span>Новое обращение</span>
-          </button>
         </div>
       </div>
     );
@@ -198,51 +163,29 @@ export default function ReporterHomePage() {
 
   // --- SCREEN: INITIAL SUBMISSION FORM ---
   return (
-    <div className="space-y-8 animate-in fade-in duration-200">
-      {/* Hero Header */}
-      <section className="space-y-3">
-        <div className="flex items-center gap-2 text-xs font-mono text-zinc-500">
-          <span>Zero-Knowledge Relay</span>
-          <span className="text-zinc-700">/</span>
-          <span>Libsodium X25519</span>
-          <span className="text-zinc-700">/</span>
-          <span>4KB Padding</span>
-        </div>
-        <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-[#ededed]">
+    <div className="space-y-6 animate-in fade-in duration-200">
+      <div className="space-y-2">
+        <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
           Анонимный ящик доверия
-          <span className="font-light text-zinc-500"> — E2EE, Zero-Knowledge.</span>
         </h1>
-        <p className="text-sm font-light text-zinc-400 leading-relaxed max-w-2xl">
-          Передайте факты нарушений в полной безопасности. Содержимое шифруется в вашем браузере до отправки. Следователь расшифрует отчёт персональным ключом, а сервер сохранит только нечитаемый шифртекст.
+        <p className="text-sm font-light text-zinc-400 leading-relaxed">
+          Сообщение шифруется в браузере до отправки. Сервер не имеет доступа к содержимому.
         </p>
-      </section>
+      </div>
 
-      {/* Submission Form */}
-      <form
-        onSubmit={handleSubmit}
-        className="border border-white/[0.08] bg-[#0e0e0e]/70 backdrop-blur-sm rounded-lg p-5 sm:p-6 space-y-4"
-      >
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <label htmlFor="report" className="text-xs font-medium text-zinc-300">
-              Текст сообщения
-            </label>
-            <span className="text-[11px] font-mono text-zinc-500">
-              {reportText.length} симв.
-            </span>
-          </div>
+      <form onSubmit={handleSubmit} className="space-y-4 pt-2">
+        <div>
           <textarea
             id="report"
-            rows={7}
+            rows={8}
             value={reportText}
             onChange={(e) => setReportText(e.target.value)}
-            placeholder="Опишите ситуацию: факты, даты, вовлечённые лица. Избегайте сведений, которые могут непреднамеренно деанонимизировать вас..."
-            className="w-full rounded-md bg-black/60 border border-white/[0.08] px-3.5 py-3 text-sm text-[#ededed] placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 focus:ring-0 transition-all font-sans resize-y leading-relaxed"
+            placeholder="Опишите ситуацию: факты, даты, вовлечённые лица..."
+            className="w-full rounded-lg bg-neutral-900/60 border border-white/10 px-4 py-3.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/20 transition-colors font-sans resize-y leading-relaxed"
             required
           />
         </div>
 
-        {/* Zero-Knowledge Evidence Upload Picker */}
         <AttachmentPicker
           files={selectedFiles}
           onChange={setSelectedFiles}
@@ -250,21 +193,20 @@ export default function ReporterHomePage() {
         />
 
         {error && (
-          <div className="p-3 rounded-md border border-red-500/30 bg-red-950/20 text-red-300 text-xs">
+          <div className="p-3 rounded-lg bg-red-950/20 border border-red-500/20 text-red-300 text-xs">
             {error}
           </div>
         )}
 
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-3 border-t border-white/[0.06]">
-          <div className="flex items-center gap-1.5 text-[11px] font-mono text-zinc-500">
-            <span className="w-1.5 h-1.5 rounded-full bg-zinc-600"></span>
-            <span>Client sealed: crypto_box_seal (ephemeral key discarded)</span>
-          </div>
+        <div className="flex items-center justify-between pt-2">
+          <span className="text-xs text-zinc-500 font-mono">
+            {reportText.length > 0 ? `${reportText.length} симв.` : ''}
+          </span>
 
           <button
             type="submit"
             disabled={isSubmitting || !reportText.trim()}
-            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] text-xs sm:text-sm font-medium hover:bg-white disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            className="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] text-sm font-medium hover:bg-white disabled:opacity-40 transition-all cursor-pointer"
           >
             {isSubmitting ? (
               <>
@@ -272,10 +214,7 @@ export default function ReporterHomePage() {
                 <span>Шифрование...</span>
               </>
             ) : (
-              <>
-                <span>Запечатать и отправить</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </>
+              <span>Отправить отчёт</span>
             )}
           </button>
         </div>
@@ -283,4 +222,3 @@ export default function ReporterHomePage() {
     </div>
   );
 }
-

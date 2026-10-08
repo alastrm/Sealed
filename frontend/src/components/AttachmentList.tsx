@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Download, File, Loader2, AlertCircle } from 'lucide-react';
+import { Download, Loader2, AlertCircle } from 'lucide-react';
 import { api } from '@/lib/api';
 import { decryptAttachmentFile, triggerSafeDownload } from '@/lib/crypto';
 import type { AttachmentMetadata } from '@/lib/types';
@@ -11,7 +11,7 @@ interface AttachmentListProps {
   title?: string;
 }
 
-export function AttachmentList({ attachments, title = 'Вложения (Zero-Knowledge Evidence):' }: AttachmentListProps) {
+export function AttachmentList({ attachments, title = 'Вложения:' }: AttachmentListProps) {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
@@ -30,11 +30,9 @@ export function AttachmentList({ attachments, title = 'Вложения (Zero-Kn
     setDownloadError(null);
 
     try {
-      // 1. Download blind encrypted ciphertext blob from backend
       const rawBuffer = await api.downloadAttachment(att.attachmentId);
       const ciphertextBytes = new Uint8Array(rawBuffer);
 
-      // 2. Decrypt in-memory in browser tab & strip bucket padding
       const decryptedBytes = await decryptAttachmentFile(
         ciphertextBytes,
         att.keyBase64,
@@ -42,7 +40,6 @@ export function AttachmentList({ attachments, title = 'Вложения (Zero-Kn
         att.bucketSize
       );
 
-      // 3. Initiate safe browser download via temporary object URL
       triggerSafeDownload(decryptedBytes, att.originalName, att.mimeType);
     } catch (err: unknown) {
       console.error(err);
@@ -54,57 +51,47 @@ export function AttachmentList({ attachments, title = 'Вложения (Zero-Kn
   }
 
   return (
-    <div className="space-y-2 pt-2">
-      <div className="text-[11px] font-mono text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
-        <File className="w-3.5 h-3.5 text-zinc-500" />
-        <span>{title} ({attachments.length})</span>
+    <div className="space-y-2 pt-1">
+      <div className="text-xs text-zinc-400">
+        {title}
       </div>
 
       {downloadError && (
-        <div className="p-2 rounded-md bg-red-950/20 border border-red-500/30 text-red-300 text-xs flex items-center gap-2">
+        <div className="p-2 rounded-lg bg-red-950/20 border border-red-500/20 text-red-300 text-xs flex items-center gap-2">
           <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
           <span>{downloadError}</span>
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+      <div className="flex flex-wrap gap-2">
         {attachments.map((att) => {
           const isDownloading = downloadingId === att.attachmentId;
 
           return (
             <div
               key={att.attachmentId}
-              className="flex items-center justify-between gap-3 p-2.5 rounded-md border border-white/[0.08] bg-black/60 hover:border-white/20 transition-colors"
+              className="inline-flex items-center gap-3 px-3 py-2 rounded-lg bg-neutral-900/60 border border-white/5 text-xs text-zinc-200"
             >
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-medium text-zinc-200 truncate" title={att.originalName}>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="truncate max-w-[160px]" title={att.originalName}>
                   {att.originalName}
-                </div>
-                <div className="text-[10px] font-mono text-zinc-500 mt-0.5 flex items-center gap-2">
-                  <span>{formatBytes(att.sizeBytes)}</span>
-                  {att.bucketSize && (
-                    <span>• Корзина: {formatBytes(att.bucketSize)}</span>
-                  )}
-                </div>
+                </span>
+                <span className="text-zinc-500 font-mono text-[11px]">
+                  {formatBytes(att.sizeBytes)}
+                </span>
               </div>
 
               <button
                 type="button"
                 onClick={() => handleDownload(att)}
                 disabled={isDownloading}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.08] text-zinc-300 hover:text-white text-xs font-mono transition-colors flex-shrink-0 disabled:opacity-50"
-                title="Скачать и расшифровать локально"
+                className="text-zinc-400 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
+                title="Скачать файл"
               >
                 {isDownloading ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Расшифровка...</span>
-                  </>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 ) : (
-                  <>
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Скачать</span>
-                  </>
+                  <Download className="w-3.5 h-3.5" />
                 )}
               </button>
             </div>

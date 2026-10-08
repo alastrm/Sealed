@@ -1,22 +1,26 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
 import Navbar from "@/components/Navbar";
 import { ParticlesBackground } from "@/components/ParticlesBackground";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
+const ibmPlexSans = IBM_Plex_Sans({
+  variable: "--font-ibm-sans",
+  subsets: ["latin", "cyrillic"],
+  weight: ["300", "400", "500", "600"],
+  display: "swap",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+const ibmPlexMono = IBM_Plex_Mono({
+  variable: "--font-ibm-mono",
+  subsets: ["latin", "cyrillic"],
+  weight: ["400", "500"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
-  title: "SEALED — Zero-Knowledge Whistleblower Platform",
-  description: "End-to-end encrypted anonymous whistleblower platform powered by Libsodium and BIP-39.",
+  title: "SEALED — Анонимный ящик доверия",
+  description: "End-to-end encrypted anonymous whistleblower platform.",
 };
 
 export default function RootLayout({
@@ -27,21 +31,17 @@ export default function RootLayout({
   return (
     <html lang="ru" className="dark">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} min-h-screen bg-[#0a0a0a] text-[#ededed] flex flex-col font-sans antialiased selection:bg-white/20 selection:text-white relative`}
+        className={`${ibmPlexSans.variable} ${ibmPlexMono.variable} min-h-screen bg-[#0a0a0a] text-[#ededed] flex flex-col font-sans antialiased selection:bg-white/20 selection:text-white relative`}
       >
         <ParticlesBackground />
         <Navbar />
-        <main className="flex-1 max-w-3xl w-full mx-auto px-6 sm:px-8 py-10 sm:py-14 relative z-10">
+        <main className="flex-1 max-w-2xl w-full mx-auto px-6 py-12 sm:py-16 relative z-10">
           {children}
         </main>
-        <footer className="border-t border-white/[0.07] py-8 text-xs text-zinc-500 relative z-10">
-          <div className="max-w-3xl mx-auto px-6 sm:px-8 flex flex-col sm:flex-row items-center justify-between gap-3 font-mono text-[11px]">
-            <span className="text-zinc-400">
-              SEALED &bull; Zero-Knowledge Relaying
-            </span>
-            <span className="text-zinc-600">
-              Libsodium X25519 &bull; Argon2id &bull; BLAKE2b &bull; BIP-39
-            </span>
+        <footer className="py-8 text-xs text-zinc-500 relative z-10 border-t border-white/5">
+          <div className="max-w-2xl mx-auto px-6 flex items-center justify-between text-zinc-500 text-xs">
+            <span>SEALED</span>
+            <span>Zero-Knowledge Relay</span>
           </div>
         </footer>
       </body>
