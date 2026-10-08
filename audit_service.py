@@ -71,10 +71,11 @@ def record_audit_event(
     stmt = (
         select(CaseAuditLog)
         .where(CaseAuditLog.case_id == case_id)
-        .order_by(desc(CaseAuditLog.created_at))
+        .order_by(desc(CaseAuditLog.sequence_number))
     )
     latest_log = db.execute(stmt).scalars().first()
     prev_hash = latest_log.current_hash if latest_log else GENESIS_HASH
+    next_seq = (latest_log.sequence_number + 1) if latest_log else 1
 
     now = datetime.now(timezone.utc)
     now_str = format_canonical_timestamp(now)
@@ -88,6 +89,7 @@ def record_audit_event(
     entry = CaseAuditLog(
         id=str(uuid.uuid4()),
         case_id=case_id,
+        sequence_number=next_seq,
         event_type=event_type_str,
         payload_hash=payload_hash,
         prev_event_hash=prev_hash,
@@ -107,7 +109,7 @@ def verify_case_audit_chain(db: Session, case_id: str) -> dict[str, Any]:
     stmt = (
         select(CaseAuditLog)
         .where(CaseAuditLog.case_id == case_id)
-        .order_by(CaseAuditLog.created_at.asc())
+        .order_by(CaseAuditLog.sequence_number.asc())
     )
     records = db.execute(stmt).scalars().all()
 
@@ -126,6 +128,7 @@ def verify_case_audit_chain(db: Session, case_id: str) -> dict[str, Any]:
     for entry in records:
         entry_summary = {
             "id": entry.id,
+            "sequenceNumber": entry.sequence_number,
             "eventType": entry.event_type,
             "payloadHash": entry.payload_hash,
             "prevEventHash": entry.prev_event_hash,

@@ -79,55 +79,64 @@ export async function deriveReporterSecrets(mnemonic: string): Promise<ReporterS
     throw new Error('Invalid 12-word BIP-39 mnemonic phrase.');
   }
 
-  // 1. Generate 512-bit BIP-39 seed
-  const bip39Seed = bip39.mnemonicToSeedSync(cleanMnemonic);
+  let bip39Seed: Buffer | Uint8Array | null = null;
+  let masterSeed: Uint8Array | null = null;
+  let keypairSeed: Uint8Array | null = null;
 
-  // 2. Derive 32-byte master seed with domain separation
-  const masterSeed = s.crypto_generichash(
-    32,
-    s.from_string(KDF_CONTEXT.MASTER_SEED),
-    bip39Seed,
-    'uint8array'
-  );
+  try {
+    // 1. Generate 512-bit BIP-39 seed
+    bip39Seed = bip39.mnemonicToSeedSync(cleanMnemonic);
 
-  // 3. Derive 32-byte seed for X25519 Box Keypair
-  const keypairSeed = s.crypto_generichash(
-    s.crypto_box_SEEDBYTES,
-    s.from_string(KDF_CONTEXT.REPORTER_KEYPAIR),
-    masterSeed,
-    'uint8array'
-  );
-  const keyPair = s.crypto_box_seed_keypair(keypairSeed, 'uint8array');
+    // 2. Derive 32-byte master seed with domain separation
+    masterSeed = s.crypto_generichash(
+      32,
+      s.from_string(KDF_CONTEXT.MASTER_SEED),
+      bip39Seed,
+      'uint8array'
+    );
 
-  // 4. Derive 32-byte case_access_token (kept on client)
-  const caseAccessToken = s.crypto_generichash(
-    32,
-    s.from_string(KDF_CONTEXT.CASE_ACCESS_TOKEN),
-    masterSeed,
-    'uint8array'
-  );
+    // 3. Derive 32-byte seed for X25519 Box Keypair
+    keypairSeed = s.crypto_generichash(
+      s.crypto_box_SEEDBYTES,
+      s.from_string(KDF_CONTEXT.REPORTER_KEYPAIR),
+      masterSeed,
+      'uint8array'
+    );
+    const keyPair = s.crypto_box_seed_keypair(keypairSeed, 'uint8array');
 
-  // 5. Derive preimage-resistant hash for server verification (stored in DB)
-  const caseAccessTokenHash = s.crypto_generichash(
-    32,
-    caseAccessToken,
-    null,
-    'uint8array'
-  );
+    // 4. Derive 32-byte case_access_token (kept on client)
+    const caseAccessToken = s.crypto_generichash(
+      32,
+      s.from_string(KDF_CONTEXT.CASE_ACCESS_TOKEN),
+      masterSeed,
+      'uint8array'
+    );
 
-  // Secure memory wipe of intermediate seed material
-  s.memzero(masterSeed);
-  s.memzero(keypairSeed);
+    // 5. Derive preimage-resistant hash for server verification (stored in DB)
+    const caseAccessTokenHash = s.crypto_generichash(
+      32,
+      caseAccessToken,
+      null,
+      'uint8array'
+    );
 
-  return {
-    mnemonic: cleanMnemonic,
-    publicKey: keyPair.publicKey,
-    privateKey: keyPair.privateKey,
-    publicKeyBase64: s.to_base64(keyPair.publicKey, s.base64_variants.ORIGINAL),
-    caseAccessToken,
-    caseAccessTokenHash,
-    caseAccessTokenHashBase64: s.to_base64(caseAccessTokenHash, s.base64_variants.ORIGINAL),
-  };
+    return {
+      mnemonic: cleanMnemonic,
+      publicKey: keyPair.publicKey,
+      privateKey: keyPair.privateKey,
+      publicKeyBase64: s.to_base64(keyPair.publicKey, s.base64_variants.ORIGINAL),
+      caseAccessToken,
+      caseAccessTokenHash,
+      caseAccessTokenHashBase64: s.to_base64(caseAccessTokenHash, s.base64_variants.ORIGINAL),
+    };
+  } finally {
+    // Guarantees intermediate seed materials are wiped even if an exception occurs
+    if (masterSeed) s.memzero(masterSeed);
+    if (keypairSeed) s.memzero(keypairSeed);
+    if (bip39Seed) {
+      s.memzero(bip39Seed);
+    }
+  }
 }
 
 /**
@@ -177,12 +186,18 @@ export async function encryptReport(
   );
   const messageBytes = s.from_string(text);
   if (messageBytes.length > MAX_PLAINTEXT_BYTES) {
+    s.memzero(messageBytes);
     throw new Error(`Report exceeds maximum size of ${MAX_PLAINTEXT_BYTES} bytes.`);
   }
   const paddedBytes = s.pad(messageBytes, CONSTANT_BLOCK_SIZE);
 
-  const sealedBytes = s.crypto_box_seal(paddedBytes, investigatorPubKey, 'uint8array');
-  return s.to_base64(sealedBytes, s.base64_variants.ORIGINAL);
+  try {
+    const sealedBytes = s.crypto_box_seal(paddedBytes, investigatorPubKey, 'uint8array');
+    return s.to_base64(sealedBytes, s.base64_variants.ORIGINAL);
+  } finally {
+    s.memzero(paddedBytes);
+    s.memzero(messageBytes);
+  }
 }
 
 /**
@@ -206,16 +221,23 @@ export async function decryptInvestigatorResponse(
     s.base64_variants.ORIGINAL
   );
 
-  const decryptedBytes = s.crypto_box_open_easy(
-    ciphertext,
-    nonce,
-    investigatorPubKey,
-    reporterPrivKey,
-    'uint8array'
-  );
+  let decryptedBytes: Uint8Array | null = null;
+  try {
+    decryptedBytes = s.crypto_box_open_easy(
+      ciphertext,
+      nonce,
+      investigatorPubKey,
+      reporterPrivKey,
+      'uint8array'
+    );
 
-  const unpadded = safeUnpad(s, decryptedBytes, CONSTANT_BLOCK_SIZE);
-  return s.to_string(unpadded);
+    const unpadded = safeUnpad(s, decryptedBytes, CONSTANT_BLOCK_SIZE);
+    return s.to_string(unpadded);
+  } finally {
+    if (decryptedBytes) {
+      s.memzero(decryptedBytes);
+    }
+  }
 }
 
 /**
@@ -272,15 +294,22 @@ export async function decryptReport(
   const ciphertext = s.from_base64(encryptedReportBase64, s.base64_variants.ORIGINAL);
   const publicKey = s.from_base64(investigatorPubKeyBase64, s.base64_variants.ORIGINAL);
 
-  const decryptedBytes = s.crypto_box_seal_open(
-    ciphertext,
-    publicKey,
-    investigatorPrivateKey,
-    'uint8array'
-  );
+  let decryptedBytes: Uint8Array | null = null;
+  try {
+    decryptedBytes = s.crypto_box_seal_open(
+      ciphertext,
+      publicKey,
+      investigatorPrivateKey,
+      'uint8array'
+    );
 
-  const unpadded = safeUnpad(s, decryptedBytes, CONSTANT_BLOCK_SIZE);
-  return s.to_string(unpadded);
+    const unpadded = safeUnpad(s, decryptedBytes, CONSTANT_BLOCK_SIZE);
+    return s.to_string(unpadded);
+  } finally {
+    if (decryptedBytes) {
+      s.memzero(decryptedBytes);
+    }
+  }
 }
 
 /**
@@ -300,22 +329,28 @@ export async function encryptInvestigatorReply(
   const nonce = s.randombytes_buf(s.crypto_box_NONCEBYTES);
   const messageBytes = s.from_string(text);
   if (messageBytes.length > MAX_PLAINTEXT_BYTES) {
+    s.memzero(messageBytes);
     throw new Error(`Reply exceeds maximum size of ${MAX_PLAINTEXT_BYTES} bytes.`);
   }
   const paddedBytes = s.pad(messageBytes, CONSTANT_BLOCK_SIZE);
 
-  const encrypted = s.crypto_box_easy(
-    paddedBytes,
-    nonce,
-    reporterPubKey,
-    investigatorPrivKey,
-    'uint8array'
-  );
+  try {
+    const encrypted = s.crypto_box_easy(
+      paddedBytes,
+      nonce,
+      reporterPubKey,
+      investigatorPrivKey,
+      'uint8array'
+    );
 
-  return {
-    encryptedResponse: s.to_base64(encrypted, s.base64_variants.ORIGINAL),
-    nonce: s.to_base64(nonce, s.base64_variants.ORIGINAL),
-  };
+    return {
+      encryptedResponse: s.to_base64(encrypted, s.base64_variants.ORIGINAL),
+      nonce: s.to_base64(nonce, s.base64_variants.ORIGINAL),
+    };
+  } finally {
+    s.memzero(paddedBytes);
+    s.memzero(messageBytes);
+  }
 }
 
 /**
@@ -335,22 +370,28 @@ export async function encryptReporterReply(
   const nonce = s.randombytes_buf(s.crypto_box_NONCEBYTES);
   const messageBytes = s.from_string(text);
   if (messageBytes.length > MAX_PLAINTEXT_BYTES) {
+    s.memzero(messageBytes);
     throw new Error(`Message exceeds maximum size of ${MAX_PLAINTEXT_BYTES} bytes.`);
   }
   const paddedBytes = s.pad(messageBytes, CONSTANT_BLOCK_SIZE);
 
-  const encrypted = s.crypto_box_easy(
-    paddedBytes,
-    nonce,
-    investigatorPubKey,
-    reporterPrivKey,
-    'uint8array'
-  );
+  try {
+    const encrypted = s.crypto_box_easy(
+      paddedBytes,
+      nonce,
+      investigatorPubKey,
+      reporterPrivKey,
+      'uint8array'
+    );
 
-  return {
-    encryptedMessage: s.to_base64(encrypted, s.base64_variants.ORIGINAL),
-    nonce: s.to_base64(nonce, s.base64_variants.ORIGINAL),
-  };
+    return {
+      encryptedMessage: s.to_base64(encrypted, s.base64_variants.ORIGINAL),
+      nonce: s.to_base64(nonce, s.base64_variants.ORIGINAL),
+    };
+  } finally {
+    s.memzero(paddedBytes);
+    s.memzero(messageBytes);
+  }
 }
 
 /**
@@ -370,16 +411,23 @@ export async function decryptCaseMessageForInvestigator(
   const nonce = s.from_base64(record.nonce, s.base64_variants.ORIGINAL);
   const reporterPubKey = s.from_base64(reporterPubKeyBase64, s.base64_variants.ORIGINAL);
 
-  const decryptedBytes = s.crypto_box_open_easy(
-    ciphertext,
-    nonce,
-    reporterPubKey,
-    investigatorPrivKey,
-    'uint8array'
-  );
+  let decryptedBytes: Uint8Array | null = null;
+  try {
+    decryptedBytes = s.crypto_box_open_easy(
+      ciphertext,
+      nonce,
+      reporterPubKey,
+      investigatorPrivKey,
+      'uint8array'
+    );
 
-  const unpadded = safeUnpad(s, decryptedBytes, CONSTANT_BLOCK_SIZE);
-  return s.to_string(unpadded);
+    const unpadded = safeUnpad(s, decryptedBytes, CONSTANT_BLOCK_SIZE);
+    return s.to_string(unpadded);
+  } finally {
+    if (decryptedBytes) {
+      s.memzero(decryptedBytes);
+    }
+  }
 }
 
 /**
@@ -445,36 +493,41 @@ export async function encryptAttachmentFile(
   const bucketSize = getAttachmentBucketSize(fileBytes.length);
   const paddedBytes = s.pad(fileBytes, bucketSize);
 
-  // 1. Generate one-time symmetric secret key and nonce
-  const key = s.crypto_secretbox_keygen();
-  const nonce = s.randombytes_buf(s.crypto_secretbox_NONCEBYTES);
+  let key: Uint8Array | null = null;
+  try {
+    // 1. Generate one-time symmetric secret key and nonce
+    key = s.crypto_secretbox_keygen();
+    const nonce = s.randombytes_buf(s.crypto_secretbox_NONCEBYTES);
 
-  // 2. Encrypt padded payload
-  const ciphertext = s.crypto_secretbox_easy(paddedBytes, nonce, key, 'uint8array');
+    // 2. Encrypt padded payload
+    const ciphertext = s.crypto_secretbox_easy(paddedBytes, nonce, key, 'uint8array');
 
-  const attachmentId =
-    typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : 'att-' + s.to_hex(s.randombytes_buf(16));
+    const attachmentId =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : 'att-' + s.to_hex(s.randombytes_buf(16));
 
-  const metadata: AttachmentMetadata = {
-    attachmentId,
-    originalName: originalName || 'evidence.bin',
-    mimeType: mimeType || 'application/octet-stream',
-    keyBase64: s.to_base64(key, s.base64_variants.ORIGINAL),
-    nonceBase64: s.to_base64(nonce, s.base64_variants.ORIGINAL),
-    sizeBytes: fileBytes.length,
-    bucketSize,
-  };
+    const metadata: AttachmentMetadata = {
+      attachmentId,
+      originalName: originalName || 'evidence.bin',
+      mimeType: mimeType || 'application/octet-stream',
+      keyBase64: s.to_base64(key, s.base64_variants.ORIGINAL),
+      nonceBase64: s.to_base64(nonce, s.base64_variants.ORIGINAL),
+      sizeBytes: fileBytes.length,
+      bucketSize,
+    };
 
-  // Securely wipe ephemeral key buffer from memory
-  s.memzero(key);
+    const fileBlob = new Blob([ciphertext as Uint8Array<ArrayBuffer>], {
+      type: 'application/octet-stream',
+    });
 
-  const fileBlob = new Blob([ciphertext as Uint8Array<ArrayBuffer>], {
-    type: 'application/octet-stream',
-  });
-
-  return { fileBlob, metadata };
+    return { fileBlob, metadata };
+  } finally {
+    if (key) {
+      s.memzero(key);
+    }
+    s.memzero(paddedBytes);
+  }
 }
 
 /**
@@ -490,21 +543,27 @@ export async function decryptAttachmentFile(
   bucketSize?: number
 ): Promise<Uint8Array> {
   const s = await initCrypto();
-  const key = s.from_base64(keyBase64, s.base64_variants.ORIGINAL);
-  const nonce = s.from_base64(nonceBase64, s.base64_variants.ORIGINAL);
+  let key: Uint8Array | null = null;
 
   let decryptedPadded: Uint8Array;
   try {
-    decryptedPadded = s.crypto_secretbox_open_easy(
-      ciphertextBytes,
-      nonce,
-      key,
-      'uint8array'
-    );
-  } catch {
-    throw new Error('Не удалось расшифровать вложение: неверный ключ или повреждённые данные.');
+    key = s.from_base64(keyBase64, s.base64_variants.ORIGINAL);
+    const nonce = s.from_base64(nonceBase64, s.base64_variants.ORIGINAL);
+
+    try {
+      decryptedPadded = s.crypto_secretbox_open_easy(
+        ciphertextBytes,
+        nonce,
+        key,
+        'uint8array'
+      );
+    } catch {
+      throw new Error('Не удалось расшифровать вложение: неверный ключ или повреждённые данные.');
+    }
   } finally {
-    s.memzero(key);
+    if (key) {
+      s.memzero(key);
+    }
   }
 
   // Attempt bucket unpadding

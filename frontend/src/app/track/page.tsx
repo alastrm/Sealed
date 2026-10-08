@@ -13,94 +13,34 @@ import {
   RefreshCw,
   Send,
 } from 'lucide-react';
-import { api } from '@/lib/api';
-import {
-  decryptInvestigatorResponse,
-  deriveReporterSecrets,
-  encryptAttachmentFile,
-  encryptReporterReply,
-  packMessagePayload,
-  parseMessageContent,
-  type ReporterSecrets,
-} from '@/lib/crypto';
-import type {
-  AttachmentMetadata,
-  AuditVerificationResponse,
-  CaseAccessResponseDto,
-  CaseMessageDto,
-} from '@/lib/types';
+import { useReporterCase } from '@/hooks/useReporterCase';
 import { AuditBadge } from '@/components/AuditBadge';
 import { AttachmentList } from '@/components/AttachmentList';
 import { AttachmentPicker } from '@/components/AttachmentPicker';
 
 export default function TrackCasePage() {
-  const [mnemonicInput, setMnemonicInput] = useState(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        return sessionStorage.getItem('sealed_mnemonic') || '';
-      } catch {
-        return '';
-      }
-    }
-    return '';
-  });
-  const [fromSession, setFromSession] = useState(() => {
-    if (typeof window !== 'undefined') {
-      try {
-        return !!sessionStorage.getItem('sealed_mnemonic');
-      } catch {
-        return false;
-      }
-    }
-    return false;
-  });
-  const [isVerifying, setIsVerifying] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    mnemonicInput,
+    setMnemonicInput,
+    fromSession,
+    setFromSession,
+    isVerifying,
+    error,
+    caseData,
+    decryptedMessages,
+    auditVerification,
+    isVerifyingAudit,
+    isSendingReply,
+    replyError,
+    lookupCase,
+    sendReply,
+    clearSession,
+    fetchAuditVerification,
+  } = useReporterCase();
 
-  // Authenticated state
-  const [caseData, setCaseData] = useState<CaseAccessResponseDto | null>(null);
-  const [activeSecrets, setActiveSecrets] = useState<ReporterSecrets | null>(null);
-  const [decryptedMessages, setDecryptedMessages] = useState<
-    (CaseMessageDto & { decryptedText: string; attachments?: AttachmentMetadata[] })[]
-  >([]);
-
-  // Tamper-evident Audit Chain state
-  const [auditVerification, setAuditVerification] = useState<AuditVerificationResponse | null>(null);
-  const [isVerifyingAudit, setIsVerifyingAudit] = useState(false);
-
-  // Reply state
+  // Local form state for draft reply
   const [replyText, setReplyText] = useState('');
   const [replyFiles, setReplyFiles] = useState<File[]>([]);
-  const [isSendingReply, setIsSendingReply] = useState(false);
-  const [replyError, setReplyError] = useState<string | null>(null);
-
-  async function fetchAuditVerification(caseId: string) {
-    setIsVerifyingAudit(true);
-    try {
-      const res = await api.verifyAuditChain(caseId);
-      setAuditVerification(res);
-    } catch (err) {
-      console.error('Failed to verify audit chain:', err);
-    } finally {
-      setIsVerifyingAudit(false);
-    }
-  }
-
-  function handleClearSession() {
-    try {
-      sessionStorage.removeItem('sealed_mnemonic');
-    } catch {
-      // ignore
-    }
-    setMnemonicInput('');
-    setFromSession(false);
-    setCaseData(null);
-    setActiveSecrets(null);
-    setDecryptedMessages([]);
-    setAuditVerification(null);
-    setReplyText('');
-    setReplyFiles([]);
-  }
 
   // Count words entered
   const words = mnemonicInput.trim() ? mnemonicInput.trim().split(/\s+/) : [];
@@ -108,125 +48,15 @@ export default function TrackCasePage() {
 
   async function handleLookup(e?: React.FormEvent) {
     if (e) e.preventDefault();
-    const cleanMnemonic = mnemonicInput.trim();
-    if (!cleanMnemonic) return;
-
-    setIsVerifying(true);
-    setError(null);
-
-    try {
-      // 1. Deterministically derive keys and token hash on client
-      const secrets = await deriveReporterSecrets(cleanMnemonic);
-      setActiveSecrets(secrets);
-
-      // 2. Query blind backend purely by caseAccessTokenHash (NO UUID NEEDED)
-      const res = await api.lookupCase(secrets.caseAccessTokenHashBase64);
-      setCaseData(res);
-
-      // Fetch and verify BLAKE2b audit chain
-      fetchAuditVerification(res.caseId);
-
-      // 3. Decrypt each message locally using reporter's derived private key and parse attachments
-      const decrypted = await Promise.all(
-        res.messages.map(async (msg) => {
-          try {
-            const rawText = await decryptInvestigatorResponse(msg, secrets.privateKey);
-            const parsed = parseMessageContent(rawText);
-            return {
-              ...msg,
-              decryptedText: parsed.text,
-              attachments: parsed.attachments,
-            };
-          } catch {
-            return {
-              ...msg,
-              decryptedText: '[Ошибка расшифровки: сообщение повреждено или не адресовано вам]',
-              attachments: [],
-            };
-          }
-        })
-      );
-
-      setDecryptedMessages(decrypted);
-    } catch (err: unknown) {
-      console.error(err);
-      const errMsg = err instanceof Error ? err.message : '';
-      if (errMsg.includes('404') || errMsg.includes('не найдено')) {
-        setError('Обращение с такой мнемонической фразой не найдено. Проверьте правильность введённых 12 слов.');
-      } else if (errMsg.includes('Invalid 12-word BIP-39')) {
-        setError('Некорректная мнемоническая фраза BIP-39. Убедитесь, что все 12 английских слов написаны правильно.');
-      } else {
-        setError(errMsg || 'Ошибка при запросе к серверу.');
-      }
-    } finally {
-      setIsVerifying(false);
-    }
+    await lookupCase();
   }
 
   async function handleSendReply(e: React.FormEvent) {
     e.preventDefault();
-    if (!replyText.trim() || !caseData || !activeSecrets) return;
-
-    setIsSendingReply(true);
-    setReplyError(null);
-
-    try {
-      const pubKeyData = await api.getInvestigatorPublicKey();
-
-      // 1. Encrypt and upload any attachments
-      const attachmentsMeta: AttachmentMetadata[] = [];
-      for (const file of replyFiles) {
-        const fileBuffer = await file.arrayBuffer();
-        const fileBytes = new Uint8Array(fileBuffer);
-        const encrypted = await encryptAttachmentFile(fileBytes, file.name, file.type);
-        const uploadRes = await api.uploadAttachment(
-          encrypted.fileBlob,
-          caseData.caseId,
-          activeSecrets.caseAccessTokenHashBase64
-        );
-        encrypted.metadata.attachmentId = uploadRes.attachmentId;
-        attachmentsMeta.push(encrypted.metadata);
-      }
-
-      // 2. Pack plaintext with Zero-Knowledge attachment metadata
-      const packedPayload = packMessagePayload(replyText.trim(), attachmentsMeta);
-
-      const { encryptedMessage, nonce } = await encryptReporterReply(
-        packedPayload,
-        pubKeyData.publicKey,
-        activeSecrets.privateKey
-      );
-
-      const newMsg = await api.sendReporterReply(
-        {
-          caseAccessTokenHash: activeSecrets.caseAccessTokenHashBase64,
-          encryptedMessage,
-          nonce,
-          investigatorPublicKey: pubKeyData.publicKey,
-        },
-        caseData.caseId
-      );
-
-      setCaseData((prev) => (prev ? { ...prev, status: 'IN_REVIEW' } : prev));
-      setDecryptedMessages((prev) => [
-        ...prev,
-        {
-          ...newMsg,
-          decryptedText: replyText.trim(),
-          attachments: attachmentsMeta,
-        },
-      ]);
+    const success = await sendReply(replyText, replyFiles);
+    if (success) {
       setReplyText('');
       setReplyFiles([]);
-
-      // Refresh audit chain verification after adding message
-      fetchAuditVerification(caseData.caseId);
-    } catch (err: unknown) {
-      console.error(err);
-      const msg = err instanceof Error ? err.message : '';
-      setReplyError(msg || 'Не удалось отправить ответ следователю.');
-    } finally {
-      setIsSendingReply(false);
     }
   }
 
@@ -332,7 +162,7 @@ export default function TrackCasePage() {
             {fromSession && (
               <button
                 type="button"
-                onClick={handleClearSession}
+                onClick={clearSession}
                 className="flex items-center gap-1.5 text-xs text-zinc-400 hover:text-zinc-300 transition-colors"
               >
                 <Trash2 className="w-3.5 h-3.5" />

@@ -49,47 +49,51 @@ def create_case(
             detail=f"Case with ID '{payload.case_id}' already exists.",
         )
 
-    case = Case(
-        id=payload.case_id,
-        case_access_token_hash=payload.case_access_token_hash,
-        reporter_public_key=payload.reporter_public_key,
-        encrypted_report=payload.encrypted_report,
-        status=CaseStatus.OPEN,
-    )
-    db.add(case)
-    db.flush()
+    try:
+        case = Case(
+            id=payload.case_id,
+            case_access_token_hash=payload.case_access_token_hash,
+            reporter_public_key=payload.reporter_public_key,
+            encrypted_report=payload.encrypted_report,
+            status=CaseStatus.OPEN,
+        )
+        db.add(case)
+        db.flush()
 
-    # Record Genesis event in cryptographic audit chain
-    record_audit_event(
-        db=db,
-        case_id=case.id,
-        event_type=AuditEventType.CASE_CREATED,
-        payload_data={
-            "case_id": case.id,
-            "reporter_public_key": case.reporter_public_key,
-            "case_access_token_hash": case.case_access_token_hash,
-            "encrypted_report_hash": secrets.token_hex(16),
-        },
-    )
+        # Record Genesis event in cryptographic audit chain
+        record_audit_event(
+            db=db,
+            case_id=case.id,
+            event_type=AuditEventType.CASE_CREATED,
+            payload_data={
+                "case_id": case.id,
+                "reporter_public_key": case.reporter_public_key,
+                "case_access_token_hash": case.case_access_token_hash,
+                "encrypted_report_hash": secrets.token_hex(16),
+            },
+        )
 
-    # Link any attachments submitted with this initial report
-    if payload.attachment_ids:
-        for att_id in payload.attachment_ids:
-            att = db.get(CaseAttachment, att_id)
-            if att:
-                att.case_id = case.id
-                record_audit_event(
-                    db=db,
-                    case_id=case.id,
-                    event_type=AuditEventType.ATTACHMENT_ADDED,
-                    payload_data={
-                        "attachment_id": att.id,
-                        "size_bytes": att.size_bytes,
-                    },
-                )
+        # Link any attachments submitted with this initial report
+        if payload.attachment_ids:
+            for att_id in payload.attachment_ids:
+                att = db.get(CaseAttachment, att_id)
+                if att:
+                    att.case_id = case.id
+                    record_audit_event(
+                        db=db,
+                        case_id=case.id,
+                        event_type=AuditEventType.ATTACHMENT_ADDED,
+                        payload_data={
+                            "attachment_id": att.id,
+                            "size_bytes": att.size_bytes,
+                        },
+                    )
 
-    db.commit()
-    db.refresh(case)
+        db.commit()
+        db.refresh(case)
+    except Exception:
+        db.rollback()
+        raise
 
     return CaseCreatedResponse(
         case_id=case.id,
@@ -130,30 +134,39 @@ async def upload_attachment(
     attachment_id = str(uuid.uuid4())
     file_path = os.path.join(STORAGE_DIR, f"{attachment_id}.enc")
 
-    with open(file_path, "wb") as f:
-        f.write(content)
+    try:
+        with open(file_path, "wb") as f:
+            f.write(content)
 
-    attachment = CaseAttachment(
-        id=attachment_id,
-        case_id=resolved_case_id,
-        ciphertext_path=file_path,
-        size_bytes=len(content),
-    )
-    db.add(attachment)
-
-    if resolved_case_id:
-        record_audit_event(
-            db=db,
+        attachment = CaseAttachment(
+            id=attachment_id,
             case_id=resolved_case_id,
-            event_type=AuditEventType.ATTACHMENT_ADDED,
-            payload_data={
-                "attachment_id": attachment_id,
-                "size_bytes": len(content),
-            },
+            ciphertext_path=file_path,
+            size_bytes=len(content),
         )
+        db.add(attachment)
 
-    db.commit()
-    db.refresh(attachment)
+        if resolved_case_id:
+            record_audit_event(
+                db=db,
+                case_id=resolved_case_id,
+                event_type=AuditEventType.ATTACHMENT_ADDED,
+                payload_data={
+                    "attachment_id": attachment_id,
+                    "size_bytes": len(content),
+                },
+            )
+
+        db.commit()
+        db.refresh(attachment)
+    except Exception:
+        db.rollback()
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+        raise
 
     return CaseAttachmentUploadResponse(
         attachment_id=attachment.id,
@@ -171,15 +184,46 @@ def download_attachment(
     attachment_id: str,
     db: Session = Depends(get_db),
 ) -> FileResponse:
-    attachment = db.get(CaseAttachment, attachment_id)
-    if not attachment or not os.path.exists(attachment.ciphertext_path):
+    # 1. Strict UUID validation
+    try:
+        parsed_uuid = uuid.UUID(attachment_id)
+        valid_attachment_id = str(parsed_uuid)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid attachment ID format: '{attachment_id}'. Must be a valid UUID.",
+        )
+
+    attachment = db.get(CaseAttachment, valid_attachment_id)
+    if not attachment:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Attachment with ID '{attachment_id}' was not found.",
+            detail=f"Attachment with ID '{valid_attachment_id}' was not found.",
+        )
+
+    # 2. Strict canonical path containment (Path Traversal prevention)
+    resolved_storage_dir = os.path.abspath(STORAGE_DIR)
+    resolved_file_path = os.path.abspath(attachment.ciphertext_path)
+
+    try:
+        is_contained = os.path.commonpath([resolved_file_path, resolved_storage_dir]) == resolved_storage_dir
+    except ValueError:
+        is_contained = False
+
+    if not is_contained:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access Denied: Path traversal detected.",
+        )
+
+    if not os.path.isfile(resolved_file_path):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Attachment file not found on disk.",
         )
 
     return FileResponse(
-        path=attachment.ciphertext_path,
+        path=resolved_file_path,
         media_type="application/octet-stream",
         headers={
             "Content-Disposition": 'attachment; filename="evidence.enc"',
@@ -286,38 +330,42 @@ def add_reporter_message_by_hash(
         inv = db.execute(select(Investigator)).scalars().first()
         inv_pub = inv.public_key if inv else ""
 
-    message = CaseMessage(
-        case_id=case.id,
-        encrypted_response=payload.encrypted_message,
-        nonce=payload.nonce,
-        investigator_public_key=inv_pub,
-        sender_type="REPORTER",
-    )
-    case.status = CaseStatus.IN_REVIEW
-    db.add(message)
-    db.flush()
+    try:
+        message = CaseMessage(
+            case_id=case.id,
+            encrypted_response=payload.encrypted_message,
+            nonce=payload.nonce,
+            investigator_public_key=inv_pub,
+            sender_type="REPORTER",
+        )
+        case.status = CaseStatus.IN_REVIEW
+        db.add(message)
+        db.flush()
 
-    record_audit_event(
-        db=db,
-        case_id=case.id,
-        event_type=AuditEventType.MESSAGE_RECEIVED,
-        payload_data={
-            "message_id": message.id,
-            "sender_type": "REPORTER",
-            "nonce": message.nonce,
-        },
-    )
-    record_audit_event(
-        db=db,
-        case_id=case.id,
-        event_type=AuditEventType.STATUS_CHANGED,
-        payload_data={
-            "new_status": CaseStatus.IN_REVIEW.value,
-        },
-    )
+        record_audit_event(
+            db=db,
+            case_id=case.id,
+            event_type=AuditEventType.MESSAGE_RECEIVED,
+            payload_data={
+                "message_id": message.id,
+                "sender_type": "REPORTER",
+                "nonce": message.nonce,
+            },
+        )
+        record_audit_event(
+            db=db,
+            case_id=case.id,
+            event_type=AuditEventType.STATUS_CHANGED,
+            payload_data={
+                "new_status": CaseStatus.IN_REVIEW.value,
+            },
+        )
 
-    db.commit()
-    db.refresh(message)
+        db.commit()
+        db.refresh(message)
+    except Exception:
+        db.rollback()
+        raise
 
     return CaseMessageDto.model_validate(message)
 
@@ -397,37 +445,41 @@ def add_reporter_message(
         inv = db.execute(select(Investigator)).scalars().first()
         inv_pub = inv.public_key if inv else ""
 
-    message = CaseMessage(
-        case_id=case.id,
-        encrypted_response=payload.encrypted_message,
-        nonce=payload.nonce,
-        investigator_public_key=inv_pub,
-        sender_type="REPORTER",
-    )
-    case.status = CaseStatus.IN_REVIEW
-    db.add(message)
-    db.flush()
+    try:
+        message = CaseMessage(
+            case_id=case.id,
+            encrypted_response=payload.encrypted_message,
+            nonce=payload.nonce,
+            investigator_public_key=inv_pub,
+            sender_type="REPORTER",
+        )
+        case.status = CaseStatus.IN_REVIEW
+        db.add(message)
+        db.flush()
 
-    record_audit_event(
-        db=db,
-        case_id=case.id,
-        event_type=AuditEventType.MESSAGE_RECEIVED,
-        payload_data={
-            "message_id": message.id,
-            "sender_type": "REPORTER",
-            "nonce": message.nonce,
-        },
-    )
-    record_audit_event(
-        db=db,
-        case_id=case.id,
-        event_type=AuditEventType.STATUS_CHANGED,
-        payload_data={
-            "new_status": CaseStatus.IN_REVIEW.value,
-        },
-    )
+        record_audit_event(
+            db=db,
+            case_id=case.id,
+            event_type=AuditEventType.MESSAGE_RECEIVED,
+            payload_data={
+                "message_id": message.id,
+                "sender_type": "REPORTER",
+                "nonce": message.nonce,
+            },
+        )
+        record_audit_event(
+            db=db,
+            case_id=case.id,
+            event_type=AuditEventType.STATUS_CHANGED,
+            payload_data={
+                "new_status": CaseStatus.IN_REVIEW.value,
+            },
+        )
 
-    db.commit()
-    db.refresh(message)
+        db.commit()
+        db.refresh(message)
+    except Exception:
+        db.rollback()
+        raise
 
     return CaseMessageDto.model_validate(message)

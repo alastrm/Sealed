@@ -293,6 +293,19 @@ def run_tests() -> None:
     assert res.status_code == 413, f"Expected 413 Request Entity Too Large, got {res.status_code}"
     print("[PASS] Test 14c: Strict 10MB Attachment Size Limit Enforced (413 Payload Too Large)")
 
+    # Test 14d: Path Traversal / Invalid UUID Rejection
+    res = client.get("/api/v1/cases/attachments/invalid-attachment-uuid-1234")
+    assert res.status_code == 400, f"Expected 400 for malformed UUID, got {res.status_code}"
+    res_traversal = client.get("/api/v1/cases/attachments/..%2F..%2Fetc%2Fpasswd")
+    assert res_traversal.status_code in (400, 404), "Path traversal path was not blocked!"
+    print("[PASS] Test 14d: Strict UUID Validation & Path Traversal Prevention (400/404 Blocked)")
+
+    # Test 14e: Valid UUID but Non-existent Attachment (404 Not Found)
+    non_existent_uuid = str(uuid.uuid4())
+    res = client.get(f"/api/v1/cases/attachments/{non_existent_uuid}")
+    assert res.status_code == 404, f"Expected 404 for missing attachment, got {res.status_code}"
+    print("[PASS] Test 14e: Missing Attachment by Valid UUID (404 Not Found)")
+
     # Test 15: Tamper-Evident BLAKE2b Audit Chain Verification
     res = client.get(f"/api/v1/cases/{test_case_id}/audit-verify")
     assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.text}"

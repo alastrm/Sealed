@@ -13,267 +13,67 @@ import {
   UserCheck,
   LogOut,
 } from 'lucide-react';
-import { api } from '@/lib/api';
-import {
-  decryptReport,
-  decryptCaseMessageForInvestigator,
-  encryptAttachmentFile,
-  encryptInvestigatorReply,
-  packMessagePayload,
-  parseMessageContent,
-  unlockInvestigatorKey,
-  wipeMemory,
-} from '@/lib/crypto';
-import type {
-  AttachmentMetadata,
-  AuditVerificationResponse,
-  CaseMessageDto,
-  InvestigatorAccountRecord,
-  InvestigatorCaseListItem,
-} from '@/lib/types';
+import { useInvestigatorSession } from '@/hooks/useInvestigatorSession';
+import type { InvestigatorCaseListItem } from '@/lib/types';
 import { AuditBadge } from '@/components/AuditBadge';
 import { AttachmentList } from '@/components/AttachmentList';
 import { AttachmentPicker } from '@/components/AttachmentPicker';
 
 export default function InvestigatorPortalPage() {
-  // Login / Unlock state
-  const [password, setPassword] = useState('Correct-Horse-Battery-Staple-2026!#');
-  const [username, setUsername] = useState('compliance.lead@integrity-trust.corp');
-  const [isUnlocking, setIsUnlocking] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
+  const {
+    username,
+    setUsername,
+    password,
+    setPassword,
+    isUnlocking,
+    loginError,
+    account,
+    privateKey,
+    cases,
+    isLoadingCases,
+    selectedCaseId,
+    selectedCase,
+    decryptedReportText,
+    reportAttachments,
+    isDecryptingReport,
+    threadMessages,
+    isLoadingThread,
+    isSendingReply,
+    replySuccess,
+    actionError,
+    auditVerification,
+    isVerifyingAudit,
+    login,
+    loadCases,
+    selectCase,
+    sendReply,
+    logout,
+    fetchAuditVerification,
+  } = useInvestigatorSession();
 
-  // Authenticated Investigator State
-  const [account, setAccount] = useState<InvestigatorAccountRecord | null>(null);
-  const [privateKey, setPrivateKey] = useState<Uint8Array | null>(null);
-
-  // Cases List State
-  const [cases, setCases] = useState<InvestigatorCaseListItem[]>([]);
-  const [isLoadingCases, setIsLoadingCases] = useState(false);
-  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
-
-  // Case Detail / Reply State
-  const [decryptedReportText, setDecryptedReportText] = useState<string | null>(null);
-  const [reportAttachments, setReportAttachments] = useState<AttachmentMetadata[]>([]);
-  const [isDecryptingReport, setIsDecryptingReport] = useState(false);
-  const [threadMessages, setThreadMessages] = useState<
-    Array<CaseMessageDto & { decryptedText: string; attachments?: AttachmentMetadata[] }>
-  >([]);
-  const [isLoadingThread, setIsLoadingThread] = useState(false);
+  // Local form state for draft reply
   const [replyText, setReplyText] = useState('');
   const [replyFiles, setReplyFiles] = useState<File[]>([]);
-  const [isSendingReply, setIsSendingReply] = useState(false);
-  const [replySuccess, setReplySuccess] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
 
-  // Tamper-evident Audit Chain state
-  const [auditVerification, setAuditVerification] = useState<AuditVerificationResponse | null>(null);
-  const [isVerifyingAudit, setIsVerifyingAudit] = useState(false);
-
-  async function fetchAuditVerification(caseId: string) {
-    setIsVerifyingAudit(true);
-    try {
-      const res = await api.verifyAuditChain(caseId);
-      setAuditVerification(res);
-    } catch (err) {
-      console.error('Failed to verify audit chain:', err);
-    } finally {
-      setIsVerifyingAudit(false);
-    }
-  }
-
-  // 1. Handle Investigator Login (Unlock Private Key via Argon2id)
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
-    setIsUnlocking(true);
-    setLoginError(null);
-
-    try {
-      // Fetch blind account blob from server
-      const accountRecord = await api.getInvestigatorAccount(username.trim());
-
-      // Derive KEK via Argon2id and decrypt private key in browser memory
-      const unlockedKey = await unlockInvestigatorKey(accountRecord, password);
-
-      setAccount(accountRecord);
-      setPrivateKey(unlockedKey);
-
-      // Load cases
-      await loadCases();
-    } catch (err: unknown) {
-      console.error(err);
-      const msg = err instanceof Error ? err.message : '';
-      setLoginError(
-        msg || 'Ошибка входа: неверный пароль или не найден аккаунт.'
-      );
-    } finally {
-      setIsUnlocking(false);
-    }
+    await login();
   }
 
-  // 2. Load Cases
-  async function loadCases() {
-    setIsLoadingCases(true);
-    setActionError(null);
-    try {
-      const list = await api.listInvestigatorCases();
-      setCases(list);
-    } catch (err: unknown) {
-      console.error(err);
-      setActionError('Не удалось загрузить список кейсов с сервера.');
-    } finally {
-      setIsLoadingCases(false);
-    }
-  }
-
-  // 3. Select Case & Decrypt Sealed Report
   async function handleSelectCase(c: InvestigatorCaseListItem) {
-    if (!account || !privateKey) return;
-
-    setSelectedCaseId(c.id);
-    setDecryptedReportText(null);
-    setReportAttachments([]);
-    setThreadMessages([]);
     setReplyText('');
     setReplyFiles([]);
-    setReplySuccess(false);
-    setActionError(null);
-    setIsDecryptingReport(true);
-    setIsLoadingThread(true);
-
-    // Fetch and verify BLAKE2b audit chain for this case
-    fetchAuditVerification(c.id);
-
-    try {
-      // 1. Decrypt Sealed Box via crypto_box_seal_open and parse attachments
-      const rawReportText = await decryptReport(
-        c.encryptedReport,
-        account.publicKey,
-        privateKey
-      );
-      const parsedReport = parseMessageContent(rawReportText);
-      setDecryptedReportText(parsedReport.text);
-      setReportAttachments(parsedReport.attachments);
-
-      // 2. Fetch and decrypt message thread
-      const messages = await api.getCaseMessages(c.id);
-      const decrypted = await Promise.all(
-        messages.map(async (msg) => {
-          try {
-            const decText = await decryptCaseMessageForInvestigator(
-              msg,
-              c.reporterPublicKey,
-              privateKey
-            );
-            const parsedMsg = parseMessageContent(decText);
-            return {
-              ...msg,
-              decryptedText: parsedMsg.text,
-              attachments: parsedMsg.attachments,
-            };
-          } catch {
-            return {
-              ...msg,
-              decryptedText: '[Ошибка расшифровки сообщения: неверный ключ или данные]',
-              attachments: [],
-            };
-          }
-        })
-      );
-      setThreadMessages(decrypted);
-    } catch (err: unknown) {
-      console.error(err);
-      setActionError('Ошибка расшифровки Sealed Box сообщения: повреждённые данные.');
-    } finally {
-      setIsDecryptingReport(false);
-      setIsLoadingThread(false);
-    }
+    await selectCase(c);
   }
 
-  // 4. Send Encrypted Reply
   async function handleSendReply(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedCaseId || !replyText.trim() || !account || !privateKey) return;
-
-    const currentCase = cases.find((c) => c.id === selectedCaseId);
-    if (!currentCase) return;
-
-    setIsSendingReply(true);
-    setActionError(null);
-
-    try {
-      // 1. Encrypt and upload any investigator attachments
-      const attachmentsMeta: AttachmentMetadata[] = [];
-      for (const file of replyFiles) {
-        const fileBuffer = await file.arrayBuffer();
-        const fileBytes = new Uint8Array(fileBuffer);
-        const encrypted = await encryptAttachmentFile(fileBytes, file.name, file.type);
-        const uploadRes = await api.uploadAttachment(
-          encrypted.fileBlob,
-          selectedCaseId
-        );
-        encrypted.metadata.attachmentId = uploadRes.attachmentId;
-        attachmentsMeta.push(encrypted.metadata);
-      }
-
-      // 2. Pack plaintext with Zero-Knowledge attachment metadata
-      const packedPayload = packMessagePayload(replyText.trim(), attachmentsMeta);
-
-      // 3. Authenticated encryption via crypto_box_easy (investigatorPrivKey -> reporterPubKey)
-      const { encryptedResponse, nonce } = await encryptInvestigatorReply(
-        packedPayload,
-        currentCase.reporterPublicKey,
-        privateKey
-      );
-
-      // 4. POST to backend
-      const newMsg = await api.sendInvestigatorResponse(selectedCaseId, {
-        caseId: selectedCaseId,
-        encryptedResponse,
-        nonce,
-        investigatorPublicKey: account.publicKey,
-      });
-
-      setThreadMessages((prev) => [
-        ...prev,
-        {
-          ...newMsg,
-          decryptedText: replyText.trim(),
-          attachments: attachmentsMeta,
-        },
-      ]);
-      setReplySuccess(true);
+    const success = await sendReply(replyText, replyFiles);
+    if (success) {
       setReplyText('');
       setReplyFiles([]);
-
-      // Refresh cases list & audit verification
-      await loadCases();
-      fetchAuditVerification(selectedCaseId);
-    } catch (err: unknown) {
-      console.error(err);
-      const msg = err instanceof Error ? err.message : '';
-      setActionError(msg || 'Ошибка отправки ответа.');
-    } finally {
-      setIsSendingReply(false);
     }
   }
-
-  // 5. Logout & Wipe Memory
-  function handleLogout() {
-    if (privateKey) {
-      wipeMemory(privateKey);
-    }
-    setPrivateKey(null);
-    setAccount(null);
-    setCases([]);
-    setSelectedCaseId(null);
-    setDecryptedReportText(null);
-    setReportAttachments([]);
-    setReplyFiles([]);
-    setAuditVerification(null);
-    setThreadMessages([]);
-  }
-
-  const selectedCase = cases.find((c) => c.id === selectedCaseId);
 
   // =========================================================================
   // VIEW: UNLOCKED INVESTIGATOR DASHBOARD
@@ -309,7 +109,7 @@ export default function InvestigatorPortalPage() {
               Обновить
             </button>
             <button
-              onClick={handleLogout}
+              onClick={logout}
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-zinc-800 bg-zinc-900/60 hover:bg-red-950/30 text-zinc-400 hover:text-red-400 text-xs font-medium transition-colors"
             >
               <LogOut className="w-3.5 h-3.5" />

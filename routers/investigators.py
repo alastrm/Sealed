@@ -140,42 +140,46 @@ def create_investigator_response(
             detail=f"Case with ID '{case_id}' was not found.",
         )
 
-    # Persist the authenticated encrypted message
-    message = CaseMessage(
-        id=str(uuid.uuid4()),
-        case_id=case_id,
-        encrypted_response=payload.encrypted_response,
-        nonce=payload.nonce,
-        investigator_public_key=payload.investigator_public_key,
-        sender_type="INVESTIGATOR",
-    )
-    db.add(message)
-    db.flush()
+    try:
+        # Persist the authenticated encrypted message
+        message = CaseMessage(
+            id=str(uuid.uuid4()),
+            case_id=case_id,
+            encrypted_response=payload.encrypted_response,
+            nonce=payload.nonce,
+            investigator_public_key=payload.investigator_public_key,
+            sender_type="INVESTIGATOR",
+        )
+        db.add(message)
+        db.flush()
 
-    record_audit_event(
-        db=db,
-        case_id=case.id,
-        event_type=AuditEventType.MESSAGE_RECEIVED,
-        payload_data={
-            "message_id": message.id,
-            "sender_type": "INVESTIGATOR",
-            "nonce": message.nonce,
-        },
-    )
-    record_audit_event(
-        db=db,
-        case_id=case.id,
-        event_type=AuditEventType.STATUS_CHANGED,
-        payload_data={
-            "new_status": CaseStatus.RESPONDED.value,
-        },
-    )
+        record_audit_event(
+            db=db,
+            case_id=case.id,
+            event_type=AuditEventType.MESSAGE_RECEIVED,
+            payload_data={
+                "message_id": message.id,
+                "sender_type": "INVESTIGATOR",
+                "nonce": message.nonce,
+            },
+        )
+        record_audit_event(
+            db=db,
+            case_id=case.id,
+            event_type=AuditEventType.STATUS_CHANGED,
+            payload_data={
+                "new_status": CaseStatus.RESPONDED.value,
+            },
+        )
 
-    # Transition case status to RESPONDED
-    case.status = CaseStatus.RESPONDED
+        # Transition case status to RESPONDED
+        case.status = CaseStatus.RESPONDED
 
-    db.commit()
-    db.refresh(message)
+        db.commit()
+        db.refresh(message)
+    except Exception:
+        db.rollback()
+        raise
 
     return CaseMessageDto.model_validate(message)
 

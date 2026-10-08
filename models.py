@@ -91,7 +91,7 @@ class Case(Base):
         "CaseAuditLog",
         back_populates="case",
         cascade="all, delete-orphan",
-        order_by="CaseAuditLog.created_at.asc()",
+        order_by="CaseAuditLog.sequence_number.asc()",
     )
 
 
@@ -175,6 +175,12 @@ class CaseAuditLog(Base):
     case_id: Mapped[str] = mapped_column(
         String(36),
         ForeignKey("cases.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    sequence_number: Mapped[int] = mapped_column(
+        Integer,
+        default=1,
         index=True,
         nullable=False,
     )
