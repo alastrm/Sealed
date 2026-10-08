@@ -1,81 +1,76 @@
-# SEALED — E2EE Anonymous Whistleblower Dropbox
+# SEALED
 
-> End-to-End Encrypted (E2EE) anonymous dropbox with a Zero-Knowledge backend.  
-> **Tech stack:** FastAPI (Python 3.12), Next.js 16 (React 19, TypeScript), libsodium (WebAssembly), SQLite / PostgreSQL, Docker Compose.
+A pet project demonstrating client-side WebAssembly cryptography with an untrusted, blind backend.
 
----
-
-## Motivation
-
-This is a pet project built to explore two engineering concepts in practice:
-1. **Client-side WebAssembly cryptography (`libsodium-wrappers-sumo`)**: generating keys, deriving credentials via BIP-39 and BLAKE2b, performing anonymous public-key encryption (Sealed Box) and authenticated X25519 messaging directly in browser memory without exposing private keys to the server.
-2. **Zero-Knowledge backend storage**: designing an API where the server acts strictly as an untrusted blind relay. The backend stores ciphertexts, has no access to plaintext reports or user passwords, and cannot decrypt correspondence even in the event of a full database compromise.
+- **Backend:** FastAPI (Python 3.12), SQLite / PostgreSQL, SlowAPI rate limiting
+- **Frontend:** Next.js 16 (React 19, TypeScript), Tailwind CSS, IBM Plex Sans / Mono
+- **Cryptography:** libsodium (`libsodium-wrappers-sumo` via WebAssembly), BIP-39
 
 ---
 
-## How It Works
+## Overview
 
-### 1. Anonymous Access via 12-Word Mnemonic (BIP-39)
-- Reporters submit reports without accounts, emails, or passwords.
-- The browser generates a **12-word BIP-39 mnemonic** (128 bits of entropy).
-- Using `crypto_generichash` (BLAKE2b with domain separation tags), the client deterministically derives:
-  - An X25519 keypair (`reporterPrivateKey`, `reporterPublicKey`);
-  - A case access token and its 32-byte BLAKE2b hash (`caseAccessTokenHash`).
-- The reporter does not need to remember technical database UUIDs. The 12 words serve as the sole credential to look up the case and decrypt responses.
+SEALED is an anonymous drop prototype. The client encrypts all data in browser memory before transmission. The server acts solely as a blind relay: it stores ciphertexts, validates blinded access tokens, and cannot decrypt messages or inspect file metadata.
 
-### 2. Anonymous Sealed Box & Traffic Analysis Mitigation
-- The browser fetches the investigator's public key (`GET /api/v1/investigators/public-key`).
-- The report plaintext is padded to a constant **4 KB** block size (`crypto_pad`) before encryption, masking the true message length against packet-size fingerprinting.
-- The padded payload is encrypted using `crypto_box_seal` (ECIES: ephemeral X25519 keypair generated on the fly, with the ephemeral private key immediately wiped after encryption).
-- The server receives `{ reporterPublicKey, caseAccessTokenHash, encryptedReport }`. The backend cannot decrypt the payload.
-
-### 3. Zero-Knowledge Investigator Authentication
-- The investigator's private key is stored on the server encrypted with `crypto_secretbox_easy`.
-- Upon login, the browser downloads the encrypted key blob, salt, and Argon2id parameters (`GET /api/v1/investigators/account`).
-- The Key Encryption Key (KEK) is derived client-side via `crypto_pwhash` (Argon2id) to decrypt the private key into tab memory. The master password never leaves the browser.
-
-### 4. Bidirectional Encrypted Dialogue
-- Investigator replies are encrypted with `crypto_box_easy` (X25519 ECDH + XSalsa20-Poly1305) targeting the reporter's public key, with 4 KB padding.
-- When checking status at `/track`, the reporter enters their 12 words. The browser derives the access token hash and queries `POST /api/v1/cases/lookup`.
-- The reporter can post follow-up replies (`POST /api/v1/cases/{case_id}/messages`). The server verifies ownership using constant-time `secrets.compare_digest(caseAccessTokenHash)`.
-- Because both parties compute the identical Diffie-Hellman shared secret, both can decrypt the thread while guaranteeing message authenticity via Poly1305 MACs.
-
-### 5. API Rate Limiting & Zero IP Logging
-- SlowAPI in-memory rate limiting applied to sensitive endpoints:
-  - `POST /cases`: 5 requests / minute (submission throttle);
-  - `POST /cases/lookup` and `POST /cases/messages`: 15 requests / minute (query throttle);
-  - `GET /account`: 15 requests / minute (credential brute-force throttle).
-- Automated IP scrubbing filter in Uvicorn / FastAPI logging: client IP (`client.host`), `X-Forwarded-For`, and `X-Real-IP` are stripped from all stdout/stderr logs.
-- Requests exceeding the limit receive HTTP `429 Too Many Requests` with a `Retry-After` header.
-
-### 6. Zero-Knowledge Evidence Upload & Bucket Padding
-- **Blind Server Storage**: Files are stored as raw ciphertext blobs strictly up to 10 MB (`storage/attachments/`). The server never receives filenames, MIME types, or decryption keys (`CaseAttachment` model stores only `id`, `case_id`, `ciphertext_path`, `size_bytes`, `created_at`).
-- **Bucket Padding**: To defeat file-size traffic analysis fingerprinting, files are padded up to nearest standard bucket boundary (256 KB, 1 MB, 5 MB, 10 MB) via `sodium.pad`.
-- **One-time Symmetric Secretbox**: Each attachment is encrypted in browser memory via `crypto_secretbox_easy` with a fresh 32-byte key (`crypto_secretbox_keygen`).
-- **E2EE Metadata Carrier**: File metadata `{ attachmentId, originalName, mimeType, keyBase64, nonceBase64 }` is sealed strictly inside the end-to-end encrypted report/message payload.
-- **Anti-XSS Safe Download**: Clients download blind binary streams (`Content-Type: application/octet-stream`, `X-Content-Type-Options: nosniff`), decrypt in tab memory, strip bucket padding, and create temporary local object URLs (`createSafeDownloadUrl`) preventing browser script execution.
-
-### 7. Tamper-Evident BLAKE2b Audit Chain
-- Every case mutation is recorded in a cryptographic hash chain (`case_audit_logs` table):
-  - `event_type`: `CASE_CREATED` | `MESSAGE_RECEIVED` | `ATTACHMENT_ADDED` | `STATUS_CHANGED`;
-  - `current_hash = BLAKE2b(prev_event_hash + event_type + payload_hash + created_at)`.
-- Initial entry links to a constant Genesis hash (`0 * 64`).
-- Any retroactive tampering (e.g., editing database records, modifying timestamps, or deleting messages) breaks chain continuity.
-- Verification endpoint (`GET /api/v1/cases/{case_id}/audit-verify`) iterates from Genesis and returns `{ isValid: bool, eventsCount: int, brokenAt: Optional[str] }`.
-- Live visual indicator badge in both investigator dashboard and reporter tracking page proves audit integrity.
+1. **Anonymous Credentials:** The reporter receives a 12-word BIP-39 mnemonic. The client derives an X25519 keypair and a blinded access token hash using BLAKE2b with domain separation tags. No accounts, emails, or technical UUIDs are required from the reporter.
+2. **Anonymous Sealed Box:** The initial report is padded to a fixed 4 KB block size and encrypted with `crypto_box_seal` using the investigator's public key. The ephemeral keypair used during encryption is destroyed immediately afterward.
+3. **Bidirectional Dialogue:** Follow-up messages are exchanged using authenticated asymmetric encryption (`crypto_box_easy`), with constant 4 KB padding on each message.
+4. **Blind Attachments:** Files up to 10 MB are padded to discrete bucket boundaries (256 KB, 1 MB, 5 MB, 10 MB) and encrypted with a fresh symmetric key (`crypto_secretbox_easy`). The server stores raw ciphertext blobs without knowing filenames, MIME types, or keys. File metadata is sealed inside the encrypted message payload.
+5. **Tamper-Evident Audit Chain:** Mutations (case creation, messages, attachments, status changes) are recorded in an append-only BLAKE2b hash chain:
+   $$\text{hash}_n = \text{BLAKE2b}(\text{hash}_{n-1} \mathbin{\Vert} \text{event\_type} \mathbin{\Vert} \text{payload\_hash} \mathbin{\Vert} \text{timestamp})$$
+   Any retroactive database edit breaks chain continuity, which the client verifies against the genesis hash.
+6. **Investigator Key Storage:** The investigator's private key is stored on the server encrypted with Argon2id + XChaCha20-Poly1305. The master password never leaves the browser; decryption happens locally in tab memory.
 
 ---
 
-## Architectural Limitations
+## Threat Model & Security Analysis
 
-Any realistic security assessment of browser-based E2EE must recognize practical threat boundaries:
+This section outlines the security guarantees and explicit limitations of the architecture.
 
-1. **Web-E2EE Trust-On-First-Use (TOFU)**  
-   The browser executes code downloaded from the server on each load. If the hosting infrastructure or CDN is compromised, an adversary could inject malicious JavaScript to exfiltrate mnemonics or plaintexts before encryption. In production environments, mitigations include strict Content Security Policies (CSP), Subresource Integrity (SRI), or distributing the client as a signed browser extension / standalone desktop binary.
-2. **Network Layer & IP Metadata**  
-   Cryptography protects payload contents, but the HTTP layer exposes client IP addresses to ISPs, routers, and server hosts. For true anonymity, reporters must route traffic through **Tor Browser** or run the application as an Onion service (`.onion`).
-3. **Endpoint Security**  
-   If the user's device is compromised by malware or keyloggers, encryption cannot protect data that is intercepted during entry or when the mnemonic is displayed on screen.
+### What Is Protected (In-Scope Defenses)
+
+- **Compromised Database / Storage Dump:**  
+  If the database or server disk is seized or leaked, an attacker gains no access to report plaintexts, message history, file attachments, or attachment metadata (filenames, extensions, MIME types). All sensitive payloads are stored as ciphertexts.
+- **Credential Storage:**  
+  The server stores only `case_access_token_hash` (a BLAKE2b digest of the client-derived token). The server cannot reverse this hash to recover the reporter's 12-word mnemonic or private key.
+- **Traffic Analysis by Message Size:**  
+  Messages are padded to a uniform 4 KB boundary, and attachments are padded to discrete buckets (256 KB, 1 MB, 5 MB, 10 MB). A passive network eavesdropper cannot infer the exact length of messages or files by inspecting packet sizes.
+- **Database Record Tampering:**  
+  If an administrator or attacker modifies past messages or status fields directly in the database, the cryptographic BLAKE2b hash chain breaks, allowing both reporter and investigator clients to detect the tampering.
+- **In-Memory Key Wiping:**  
+  Sensitive cryptographic keys and intermediate buffers in WebAssembly memory are zeroed out via `sodium.memzero` within `finally` blocks upon completion or failure.
+
+### What Is NOT Protected (Critical Limitations)
+
+Any realistic evaluation of browser-based end-to-end encryption must acknowledge its fundamental boundaries:
+
+1. **The JavaScript Delivery Problem (Primary Weakness of Web-Crypto):**  
+   The browser fetches application JavaScript from the server on each load. If the server, hosting provider, or CDN is compromised, an attacker can serve a malicious version of the JavaScript bundle that exfiltrates mnemonics or plaintexts before encryption occurs.  
+   *Production whistleblowing tools (e.g., SecureDrop) avoid browser-delivered code entirely, relying on Tor Onion services, strict sandbox environments, or signed native binaries.*
+2. **Network Metadata and IP Correlation:**  
+   While application-level logs strip client IP addresses, the transport and network layers (TCP/IP, reverse proxies, ISPs, cloud providers) still observe incoming connections. An observer monitoring network traffic can correlate the timing and volume of requests between a reporter and an investigator.  
+   *Without routing traffic through Tor Browser or a multi-hop VPN, network anonymity is not guaranteed.*
+3. **Public Key Distribution (Trust On First Use):**  
+   The client fetches the investigator's public key over HTTP/TLS (`GET /api/v1/investigators/public-key`). A compromised or malicious server could substitute this with an attacker's public key, enabling a man-in-the-middle attack on initial submissions. There is currently no out-of-band fingerprint verification mechanism.
+4. **Browser Runtime and Garbage Collection:**  
+   While WebAssembly buffers are zeroed using `sodium.memzero`, JavaScript strings (such as text entered in HTML form fields or stored in React state) are immutable and managed by the V8 garbage collector. They may persist in process memory until garbage collection runs, leaving them vulnerable to local memory inspection or rogue browser extensions.
+5. **Endpoint Security:**  
+   If the reporter's machine has malware, a keylogger, or malicious browser extensions installed, data can be captured prior to encryption or when the 12-word mnemonic is displayed on screen.
+
+---
+
+## Cryptographic Primitives
+
+| Purpose | Algorithm / Primitive | Library |
+| :--- | :--- | :--- |
+| Initial Report Encryption | `crypto_box_seal` (X25519, XSalsa20-Poly1305, ephemeral key) | libsodium |
+| Bidirectional Messages | `crypto_box_easy` (X25519 ECDH, XSalsa20-Poly1305) | libsodium |
+| File Attachment Encryption | `crypto_secretbox_easy` (XChaCha20-Poly1305, 32-byte key) | libsodium |
+| Mnemonic Generation | BIP-39 (128 bits entropy $\rightarrow$ 12 English words) | `@scure/bip39` |
+| Key & Token Derivation | BLAKE2b (`crypto_generichash` with domain tags) | libsodium |
+| Investigator Key KDF | Argon2id (`crypto_pwhash`, ops=2, mem=64MB) | libsodium |
+| Audit Hash Chain | BLAKE2b (`crypto_generichash`) | libsodium / Python `hashlib` |
+| Length Padding | `crypto_pad` / `crypto_unpad` (PKCS#7 equivalent) | libsodium |
 
 ---
 
@@ -84,70 +79,70 @@ Any realistic security assessment of browser-based E2EE must recognize practical
 ```
 Sealed/
 ├── backend/ (root directory)
-│   ├── main.py              # FastAPI app setup, middleware, CORS
-│   ├── models.py            # SQLAlchemy 2.0 models (Investigator, Case, CaseMessage, CaseAttachment, CaseAuditLog)
-│   ├── schemas.py           # Pydantic v2 schemas with camelCase aliasing
-│   ├── audit_service.py     # BLAKE2b tamper-evident hash chain & verification service
+│   ├── main.py              # FastAPI app, middleware, CORS
+│   ├── models.py            # SQLAlchemy 2.0 models (Investigator, Case, Message, Attachment, AuditLog)
+│   ├── schemas.py           # Pydantic v2 schemas
+│   ├── audit_service.py     # BLAKE2b audit hash chain implementation
 │   ├── rate_limiter.py      # SlowAPI rate limiting (5 req/min create, 15 req/min lookup)
-│   ├── logging_config.py    # Zero-knowledge IP stripping for Uvicorn & FastAPI logging
-│   ├── seed.py              # Test investigator seeder
-│   ├── test_api.py          # 15 integration tests covering all flows, attachments & audit chain
+│   ├── logging_config.py    # IP stripping filter for stdout/stderr logs
+│   ├── seed.py              # Test database seeder
+│   ├── test_api.py          # Backend integration test suite (18 tests)
 │   └── routers/
-│       ├── cases.py         # Reporter endpoints: create, lookup, blind attachments, audit verification
-│       └── investigators.py # Investigator endpoints: keys, case listing, replies
+│       ├── cases.py         # Submission, lookup, attachments, audit endpoints
+│       └── investigators.py # Key exchange, cases listing, replies
 ├── frontend/                # Next.js 16 App Router
 │   ├── src/
 │   │   ├── lib/
-│   │   │   ├── crypto.ts    # Libsodium WASM, BIP-39, bucket padding & secretbox helpers
-│   │   │   ├── api.ts       # Backend REST API client
-│   │   │   └── types.ts     # TypeScript DTO interfaces
+│   │   │   ├── crypto.ts    # libsodium WASM, BIP-39, bucket padding, KDF
+│   │   │   ├── api.ts       # Backend API client
+│   │   │   └── types.ts     # DTO types
 │   │   ├── components/
-│   │   │   ├── AuditBadge.tsx       # BLAKE2b tamper-evident audit status indicator
-│   │   │   ├── AttachmentList.tsx   # In-memory decryption & anti-XSS download component
-│   │   │   └── AttachmentPicker.tsx # Bucket-padded file picker (256KB, 1MB, 5MB, 10MB)
+│   │   │   ├── ParticlesBackground.tsx # Canvas background
+│   │   │   ├── Navbar.tsx              # Minimal navigation
+│   │   │   ├── AuditBadge.tsx          # BLAKE2b audit chain status
+│   │   │   ├── AttachmentList.tsx      # In-memory decryption & download
+│   │   │   └── AttachmentPicker.tsx    # Evidence upload picker
 │   │   └── app/
-│   │       ├── page.tsx          # Submission page (client-side encryption & evidence upload)
-│   │       ├── track/page.tsx    # Case tracking & dialogue (audit badge & evidence downloads)
-│   │       └── investigator/page.tsx # Investigator dashboard (audit verification & attachments)
-├── poc.ts                   # Standalone TypeScript PoC validating the cryptographic lifecycle
-├── docker-compose.yml       # Multi-container setup (backend + frontend)
-└── Dockerfile               # Production container for FastAPI backend
+│   │       ├── layout.tsx              # IBM Plex Sans / Mono fonts, root shell
+│   │       ├── page.tsx                # Report submission & 12-word mnemonic screen
+│   │       ├── track/page.tsx          # Case tracking & message thread
+│   │       └── investigator/page.tsx   # Investigator login & dashboard
+├── docker-compose.yml       # Docker Compose configuration
+└── Dockerfile               # Backend container
 ```
 
 ---
 
 ## Quickstart
 
-### Option 1: Docker Compose
+### Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-- **Frontend:** [http://localhost:3000](http://localhost:3000)
-- **Backend API:** [http://localhost:8000](http://localhost:8000)
-- **Interactive OpenAPI Docs:** [http://localhost:8000/docs](http://localhost:8000/docs)
-
-*The database and a test investigator account are provisioned automatically on startup.*
+- **Frontend:** `http://localhost:3000`
+- **Backend API:** `http://localhost:8000`
+- **Swagger Docs:** `http://localhost:8000/docs`
 
 ---
 
-### Option 2: Local Development (Without Docker)
+### Local Setup
 
 #### Backend (Python 3.10+)
 
 ```bash
-# Set up virtual environment
+# Create and activate virtual environment
 python -m venv venv
 venv\Scripts\activate   # Linux/macOS: source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
 
-# Seed the test investigator
+# Seed test database
 python seed.py
 
-# Start API server
+# Run API server
 uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -164,21 +159,19 @@ npm run dev
 ## Test Credentials
 
 For testing the investigator portal (`/investigator`):
-- **Email:** `compliance.lead@integrity-trust.corp`
-- **Password:** `Correct-Horse-Battery-Staple-2026!#`
+
+- **Username:** `investigator@sealed.org` (or `compliance.lead@integrity-trust.corp`)
+- **Password:** `Password123!` (or `Correct-Horse-Battery-Staple-2026!#`)
 
 ---
 
 ## Running Automated Tests
 
 ```bash
-# 1. Backend integration tests (10 tests: creation, access control, rate limits, dialogue)
+# 1. Backend integration tests (18 tests covering crypto, rate limits, attachments, audit chain)
 python test_api.py
 
-# 2. Standalone cryptographic lifecycle PoC (pure TypeScript)
-npx tsx poc.ts
-
-# 3. Frontend production build and TypeScript type-check
+# 2. Frontend build and TypeScript validation
 cd frontend && npm run build
 ```
 
@@ -186,4 +179,4 @@ cd frontend && npm run build
 
 ## License
 
-[MIT](LICENSE)
+MIT
