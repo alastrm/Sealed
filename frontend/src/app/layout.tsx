@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import Navbar from "@/components/Navbar";
+import { ParticlesBackground } from "@/components/ParticlesBackground";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,19 +27,20 @@ export default function RootLayout({
   return (
     <html lang="ru" className="dark">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} min-h-screen bg-black text-zinc-100 flex flex-col font-sans antialiased selection:bg-zinc-800 selection:text-white`}
+        className={`${geistSans.variable} ${geistMono.variable} min-h-screen bg-[#0a0a0a] text-[#ededed] flex flex-col font-sans antialiased selection:bg-white/20 selection:text-white relative`}
       >
+        <ParticlesBackground />
         <Navbar />
-        <main className="flex-1 max-w-3xl w-full mx-auto px-4 py-12">
+        <main className="flex-1 max-w-3xl w-full mx-auto px-6 sm:px-8 py-10 sm:py-14 relative z-10">
           {children}
         </main>
-        <footer className="border-t border-zinc-900 py-8 text-xs text-zinc-400">
-          <div className="max-w-3xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <span className="font-mono text-zinc-400">
-              SEALED &bull; Zero-Knowledge Architecture
+        <footer className="border-t border-white/[0.07] py-8 text-xs text-zinc-500 relative z-10">
+          <div className="max-w-3xl mx-auto px-6 sm:px-8 flex flex-col sm:flex-row items-center justify-between gap-3 font-mono text-[11px]">
+            <span className="text-zinc-400">
+              SEALED &bull; Zero-Knowledge Relaying
             </span>
-            <span className="text-zinc-400 font-mono text-[11px]">
-              X25519 &bull; Argon2id &bull; BLAKE2b &bull; BIP-39
+            <span className="text-zinc-600">
+              Libsodium X25519 &bull; Argon2id &bull; BLAKE2b &bull; BIP-39
             </span>
           </div>
         </footer>

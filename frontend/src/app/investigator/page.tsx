@@ -2,9 +2,7 @@
 
 import { useState } from 'react';
 import {
-  Lock,
   Unlock,
-  Shield,
   AlertTriangle,
   Loader2,
   FileText,
@@ -12,6 +10,8 @@ import {
   CheckCircle2,
   UserCheck,
   LogOut,
+  RefreshCw,
+  ArrowRight,
 } from 'lucide-react';
 import { useInvestigatorSession } from '@/hooks/useInvestigatorSession';
 import type { InvestigatorCaseListItem } from '@/lib/types';
@@ -82,19 +82,19 @@ export default function InvestigatorPortalPage() {
     return (
       <div className="space-y-6 animate-in fade-in duration-200">
         {/* Top Investigator Bar */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl bg-zinc-950/70 border border-zinc-800">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 sm:p-5 rounded-lg border border-white/[0.08] bg-[#0e0e0e]/70 backdrop-blur-sm">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 flex items-center justify-center">
-              <UserCheck className="w-5 h-5" />
+            <div className="w-8 h-8 rounded-md bg-white/[0.04] border border-white/[0.08] text-zinc-300 flex items-center justify-center">
+              <UserCheck className="w-4 h-4" />
             </div>
             <div>
-              <div className="text-sm font-semibold text-white flex items-center gap-2">
+              <div className="text-xs sm:text-sm font-medium text-[#ededed] flex items-center gap-2">
                 <span>{account.username}</span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-emerald-500/40 bg-emerald-950/20 text-emerald-400">
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-emerald-500/30 bg-emerald-950/20 text-emerald-400">
                   Ключ в памяти
                 </span>
               </div>
-              <p className="text-xs text-zinc-400 font-mono truncate max-w-sm sm:max-w-md mt-0.5">
+              <p className="text-[11px] text-zinc-500 font-mono truncate max-w-sm sm:max-w-md mt-0.5">
                 Pubkey: {account.publicKey}
               </p>
             </div>
@@ -104,15 +104,16 @@ export default function InvestigatorPortalPage() {
             <button
               onClick={loadCases}
               disabled={isLoadingCases}
-              className="px-3.5 py-1.5 rounded-xl border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 text-xs font-medium transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.08] text-zinc-300 text-xs font-mono transition-colors disabled:opacity-50"
             >
-              Обновить
+              <RefreshCw className={`w-3 h-3 ${isLoadingCases ? 'animate-spin' : ''}`} />
+              <span>Обновить</span>
             </button>
             <button
               onClick={logout}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl border border-zinc-800 bg-zinc-900/60 hover:bg-red-950/30 text-zinc-400 hover:text-red-400 text-xs font-medium transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] hover:border-red-500/40 hover:bg-red-950/20 text-zinc-400 hover:text-red-300 text-xs font-mono transition-colors"
             >
-              <LogOut className="w-3.5 h-3.5" />
+              <LogOut className="w-3 h-3" />
               <span>Заблокировать</span>
             </button>
           </div>
@@ -121,17 +122,17 @@ export default function InvestigatorPortalPage() {
         {/* Two-Column Workspace: Cases List & Detail View */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Left Column: Cases List */}
-          <div className="lg:col-span-5 bg-zinc-950/50 border border-zinc-800 rounded-2xl p-4 space-y-3">
-            <div className="flex items-center justify-between border-b border-zinc-900 pb-3">
+          <div className="lg:col-span-5 border border-white/[0.08] bg-[#0e0e0e]/70 rounded-lg p-4 space-y-3">
+            <div className="flex items-center justify-between border-b border-white/[0.06] pb-3">
               <h2 className="text-xs font-mono uppercase tracking-wider text-zinc-400 flex items-center gap-2">
-                <FileText className="w-3.5 h-3.5 text-zinc-400" />
+                <FileText className="w-3.5 h-3.5 text-zinc-500" />
                 <span>Поступившие кейсы ({cases.length})</span>
               </h2>
-              {isLoadingCases && <Loader2 className="w-3.5 h-3.5 text-zinc-400 animate-spin" />}
+              {isLoadingCases && <Loader2 className="w-3.5 h-3.5 text-zinc-500 animate-spin" />}
             </div>
 
             {cases.length === 0 ? (
-              <div className="text-center py-12 text-zinc-400 text-xs">
+              <div className="text-center py-12 text-zinc-500 text-xs font-mono">
                 {isLoadingCases ? 'Загрузка списка...' : 'Обращений пока нет.'}
               </div>
             ) : (
@@ -142,28 +143,28 @@ export default function InvestigatorPortalPage() {
                     <div
                       key={c.id}
                       onClick={() => handleSelectCase(c)}
-                      className={`p-3.5 rounded-xl border text-left cursor-pointer transition-all ${
+                      className={`p-3 rounded-md border text-left cursor-pointer transition-all ${
                         isSelected
-                          ? 'bg-zinc-900 border-zinc-600 text-white'
-                          : 'bg-black border-zinc-800/80 hover:border-zinc-700 text-zinc-300'
+                          ? 'bg-white/[0.06] border-white/20 text-white'
+                          : 'bg-black/50 border-white/[0.06] hover:border-white/10 text-zinc-300'
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2 mb-1.5">
-                        <span className="font-mono text-xs font-medium truncate">
+                        <span className="font-mono text-xs font-medium truncate text-[#ededed]">
                           {c.id.slice(0, 16)}...
                         </span>
                         <span
-                          className={`text-[10px] font-mono px-2 py-0.5 rounded ${
+                          className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
                             c.status === 'RESPONDED'
-                              ? 'border border-emerald-500/40 bg-emerald-950/20 text-emerald-400'
-                              : 'border border-zinc-800 bg-zinc-900 text-zinc-400'
+                              ? 'border border-emerald-500/30 bg-emerald-950/20 text-emerald-400'
+                              : 'border border-white/[0.08] bg-white/[0.03] text-zinc-400'
                           }`}
                         >
                           {c.status}
                         </span>
                       </div>
 
-                      <div className="flex items-center justify-between text-[11px] text-zinc-400 font-mono">
+                      <div className="flex items-center justify-between text-[11px] text-zinc-500 font-mono">
                         <span>{new Date(c.createdAt).toLocaleDateString('ru-RU')}</span>
                         <span>{c.messageCount} ответов</span>
                       </div>
@@ -175,18 +176,18 @@ export default function InvestigatorPortalPage() {
           </div>
 
           {/* Right Column: Case Detail & Response Form */}
-          <div className="lg:col-span-7 bg-zinc-950/50 border border-zinc-800 rounded-2xl p-6 space-y-6">
+          <div className="lg:col-span-7 border border-white/[0.08] bg-[#0e0e0e]/70 rounded-lg p-5 sm:p-6 space-y-6">
             {!selectedCase ? (
-              <div className="text-center py-20 text-zinc-400 text-xs space-y-2">
-                <FileText className="w-7 h-7 mx-auto text-zinc-400" />
+              <div className="text-center py-20 text-zinc-500 text-xs space-y-2">
+                <FileText className="w-6 h-6 mx-auto text-zinc-600" />
                 <p>Выберите обращение из списка слева для расшифровки.</p>
               </div>
             ) : (
               <div className="space-y-6">
                 {/* Header */}
-                <div className="border-b border-zinc-900 pb-4 space-y-3">
+                <div className="border-b border-white/[0.06] pb-4 space-y-3">
                   <div className="space-y-1">
-                    <span className="text-[11px] uppercase font-mono text-zinc-400 block">
+                    <span className="text-[11px] uppercase font-mono text-zinc-500 block">
                       Детализация обращения
                     </span>
                     <div className="font-mono text-xs text-zinc-300 select-all">
@@ -204,24 +205,24 @@ export default function InvestigatorPortalPage() {
 
                 {/* Decrypted Report Box */}
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between text-xs font-semibold text-zinc-200">
-                    <span className="flex items-center gap-1.5 text-zinc-200">
+                  <div className="flex items-center justify-between text-xs font-medium text-zinc-300">
+                    <span className="flex items-center gap-1.5">
                       <Unlock className="w-3.5 h-3.5 text-zinc-400" />
                       Расшифрованный текст обращения
                     </span>
-                    <span className="text-zinc-400 font-mono text-[11px]">
+                    <span className="text-zinc-500 font-mono text-[11px]">
                       Sealed Box &bull; Client Decrypted
                     </span>
                   </div>
 
                   {isDecryptingReport ? (
-                    <div className="p-8 rounded-xl bg-black border border-zinc-800 flex items-center justify-center gap-2 text-zinc-400 text-xs">
+                    <div className="p-8 rounded-md bg-black/60 border border-white/[0.08] flex items-center justify-center gap-2 text-zinc-500 text-xs font-mono">
                       <Loader2 className="w-4 h-4 animate-spin text-zinc-400" />
                       <span>Расшифровка закрытого ящика...</span>
                     </div>
                   ) : decryptedReportText ? (
                     <div className="space-y-3">
-                      <div className="p-4 rounded-xl bg-black border border-zinc-800 text-sm text-zinc-100 whitespace-pre-wrap leading-relaxed font-sans">
+                      <div className="p-4 rounded-md bg-black/60 border border-white/[0.08] text-sm text-[#ededed] whitespace-pre-wrap leading-relaxed font-sans">
                         {decryptedReportText}
                       </div>
 
@@ -231,18 +232,18 @@ export default function InvestigatorPortalPage() {
                       )}
                     </div>
                   ) : (
-                    <div className="p-4 rounded-xl bg-red-950/20 border border-red-500/30 text-red-300 text-xs">
+                    <div className="p-4 rounded-md bg-red-950/20 border border-red-500/30 text-red-300 text-xs font-mono">
                       Не удалось расшифровать сообщение.
                     </div>
                   )}
                 </div>
 
                 {/* Dialogue Thread */}
-                <div className="space-y-3 pt-4 border-t border-zinc-900">
-                  <div className="flex items-center justify-between text-xs font-semibold text-zinc-200">
+                <div className="space-y-3 pt-4 border-t border-white/[0.06]">
+                  <div className="flex items-center justify-between text-xs font-medium text-zinc-300">
                     <span>История диалога ({threadMessages.length})</span>
                     {isLoadingThread && (
-                      <span className="flex items-center gap-1.5 text-zinc-400 text-[11px]">
+                      <span className="flex items-center gap-1.5 text-zinc-500 text-[11px] font-mono">
                         <Loader2 className="w-3 h-3 animate-spin" />
                         Загрузка сообщений...
                       </span>
@@ -250,7 +251,7 @@ export default function InvestigatorPortalPage() {
                   </div>
 
                   {threadMessages.length === 0 && !isLoadingThread ? (
-                    <div className="p-4 rounded-xl bg-black/40 border border-zinc-900 text-zinc-500 text-xs text-center">
+                    <div className="p-4 rounded-md bg-black/40 border border-white/[0.06] text-zinc-500 text-xs text-center font-mono">
                       Ответов и уточнений по этому кейсу ещё не было.
                     </div>
                   ) : (
@@ -260,15 +261,15 @@ export default function InvestigatorPortalPage() {
                         return (
                           <div
                             key={msg.id || idx}
-                            className={`p-3.5 rounded-xl border space-y-2 ${
+                            className={`p-3.5 rounded-md border space-y-2 ${
                               isFromReporter
                                 ? 'bg-amber-950/10 border-amber-900/30'
-                                : 'bg-zinc-900/40 border-zinc-800'
+                                : 'bg-black/60 border-white/[0.08]'
                             }`}
                           >
                             <div className="flex items-center justify-between">
                               <span
-                                className={`text-[10px] font-mono px-2 py-0.5 rounded font-medium ${
+                                className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-medium ${
                                   isFromReporter
                                     ? 'bg-amber-950/30 border border-amber-700/40 text-amber-300'
                                     : 'bg-emerald-950/30 border border-emerald-700/40 text-emerald-300'
@@ -276,7 +277,7 @@ export default function InvestigatorPortalPage() {
                               >
                                 {isFromReporter ? 'Репортёр (Аноним)' : 'Следователь (Вы)'}
                               </span>
-                              <span className="text-[10px] text-zinc-400 font-mono">
+                              <span className="text-[10px] text-zinc-500 font-mono">
                                 {new Date(msg.createdAt).toLocaleString('ru-RU')}
                               </span>
                             </div>
@@ -296,9 +297,9 @@ export default function InvestigatorPortalPage() {
                 </div>
 
                 {/* Reply Form */}
-                <form onSubmit={handleSendReply} className="space-y-4 pt-4 border-t border-zinc-900">
+                <form onSubmit={handleSendReply} className="space-y-4 pt-4 border-t border-white/[0.06]">
                   <div>
-                    <label htmlFor="reply" className="block text-xs font-semibold text-zinc-200 mb-2">
+                    <label htmlFor="reply" className="block text-xs font-medium text-zinc-300 mb-2">
                       Официальный ответ (шифруется публичным ключом репортёра):
                     </label>
                     <textarea
@@ -307,7 +308,7 @@ export default function InvestigatorPortalPage() {
                       value={replyText}
                       onChange={(e) => setReplyText(e.target.value)}
                       placeholder="Введите текст ответа. Он будет зашифрован шифром crypto_box_easy..."
-                      className="w-full rounded-xl bg-black border border-zinc-800 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 transition-all resize-y leading-relaxed font-sans"
+                      className="w-full rounded-md bg-black/60 border border-white/[0.08] px-3.5 py-3 text-sm text-[#ededed] placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 focus:ring-0 transition-all resize-y leading-relaxed font-sans"
                       required
                     />
                   </div>
@@ -320,14 +321,14 @@ export default function InvestigatorPortalPage() {
                   />
 
                   {actionError && (
-                    <div className="p-3 rounded-xl bg-red-950/20 border border-red-500/30 text-red-300 text-xs flex gap-2">
+                    <div className="p-3 rounded-md bg-red-950/20 border border-red-500/30 text-red-300 text-xs flex gap-2">
                       <AlertTriangle className="w-4 h-4 flex-shrink-0 text-red-400" />
                       <span>{actionError}</span>
                     </div>
                   )}
 
                   {replySuccess && (
-                    <div className="p-3 rounded-xl border border-emerald-500/30 bg-emerald-950/20 text-emerald-300 text-xs flex items-center gap-2">
+                    <div className="p-3 rounded-md border border-emerald-500/30 bg-emerald-950/20 text-emerald-300 text-xs flex items-center gap-2">
                       <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-emerald-400" />
                       <span>Ответ зашифрован и сохранён на сервере.</span>
                     </div>
@@ -337,17 +338,17 @@ export default function InvestigatorPortalPage() {
                     <button
                       type="submit"
                       disabled={isSendingReply || !replyText.trim()}
-                      className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-white text-black font-medium text-sm hover:bg-zinc-200 disabled:opacity-40 transition-all"
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] font-medium text-xs sm:text-sm hover:bg-white disabled:opacity-40 transition-all"
                     >
                       {isSendingReply ? (
                         <>
-                          <Loader2 className="w-4 h-4 animate-spin text-black" />
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0a0a0a]" />
                           <span>Шифрование...</span>
                         </>
                       ) : (
                         <>
-                          <Send className="w-4 h-4" />
-                          <span>Отправить зашифрованный ответ</span>
+                          <span>Отправить ответ</span>
+                          <Send className="w-3.5 h-3.5" />
                         </>
                       )}
                     </button>
@@ -365,25 +366,28 @@ export default function InvestigatorPortalPage() {
   // VIEW: LOGIN / UNLOCK SCREEN
   // =========================================================================
   return (
-    <div className="max-w-md mx-auto space-y-6 pt-6 animate-in fade-in duration-200">
-      <div className="space-y-2 text-center">
-        <div className="w-10 h-10 rounded-full border border-zinc-800 bg-zinc-900 flex items-center justify-center mx-auto text-zinc-300 mb-3">
-          <Lock className="w-4 h-4" />
+    <div className="max-w-md mx-auto space-y-6 pt-4 animate-in fade-in duration-200">
+      <div className="space-y-3">
+        <div className="flex items-center gap-2 text-xs font-mono text-zinc-500">
+          <span>Argon2id KDF</span>
+          <span className="text-zinc-700">/</span>
+          <span>X25519 Decryption</span>
         </div>
-        <h1 className="text-xl font-bold tracking-tight text-white">
+        <h1 className="text-2xl font-semibold tracking-tight text-[#ededed]">
           Кабинет следователя
+          <span className="font-light text-zinc-500"> — комплаенс</span>
         </h1>
-        <p className="text-zinc-400 text-xs">
-          Приватный ключ расшифровывается локально на вашем клиенте через Argon2id.
+        <p className="text-sm font-light text-zinc-400 leading-relaxed">
+          Приватный ключ расшифровывается локально в браузере через Argon2id. Сервер хранит только зашифрованный блоб.
         </p>
       </div>
 
       <form
         onSubmit={handleLogin}
-        className="border border-zinc-800/90 bg-zinc-950/40 rounded-2xl p-6 space-y-4"
+        className="border border-white/[0.08] bg-[#0e0e0e]/70 backdrop-blur-sm rounded-lg p-5 sm:p-6 space-y-4"
       >
-        <div>
-          <label htmlFor="username" className="block text-xs font-mono uppercase text-zinc-400 mb-1.5">
+        <div className="space-y-1.5">
+          <label htmlFor="username" className="block text-xs font-mono uppercase text-zinc-400">
             Email / Логин:
           </label>
           <input
@@ -391,13 +395,13 @@ export default function InvestigatorPortalPage() {
             type="text"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
-            className="w-full rounded-xl bg-black border border-zinc-800 px-4 py-2.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 transition-all font-mono"
+            className="w-full rounded-md bg-black/60 border border-white/[0.08] px-3.5 py-2.5 text-xs text-[#ededed] placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 focus:ring-0 transition-all font-mono"
             required
           />
         </div>
 
-        <div>
-          <label htmlFor="password" className="block text-xs font-mono uppercase text-zinc-400 mb-1.5">
+        <div className="space-y-1.5">
+          <label htmlFor="password" className="block text-xs font-mono uppercase text-zinc-400">
             Пароль для расшифровки:
           </label>
           <input
@@ -405,16 +409,16 @@ export default function InvestigatorPortalPage() {
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-xl bg-black border border-zinc-800 px-4 py-2.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 transition-all font-mono"
+            className="w-full rounded-md bg-black/60 border border-white/[0.08] px-3.5 py-2.5 text-xs text-[#ededed] placeholder:text-zinc-600 focus:outline-none focus:border-zinc-500 focus:ring-0 transition-all font-mono"
             required
           />
-          <p className="text-[11px] text-zinc-400 mt-1.5">
-            Тестовый пароль из seed.py подставлен для быстрой проверки.
+          <p className="text-[11px] text-zinc-500 font-mono">
+            Тестовый аккаунт: investigator@sealed.org / Password123!
           </p>
         </div>
 
         {loginError && (
-          <div className="p-3 rounded-xl bg-red-950/20 border border-red-500/30 text-red-300 text-xs flex gap-2">
+          <div className="p-3 rounded-md bg-red-950/20 border border-red-500/30 text-red-300 text-xs flex gap-2">
             <AlertTriangle className="w-4 h-4 flex-shrink-0 text-red-400" />
             <span>{loginError}</span>
           </div>
@@ -423,28 +427,21 @@ export default function InvestigatorPortalPage() {
         <button
           type="submit"
           disabled={isUnlocking || !password.trim()}
-          className="w-full flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-white text-black font-medium text-sm hover:bg-zinc-200 transition-all disabled:opacity-40"
+          className="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] font-medium text-xs sm:text-sm hover:bg-white transition-all disabled:opacity-40"
         >
           {isUnlocking ? (
             <>
-              <Loader2 className="w-4 h-4 animate-spin text-black" />
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0a0a0a]" />
               <span>Расшифровка Argon2id...</span>
             </>
           ) : (
             <>
-              <Unlock className="w-4 h-4" />
               <span>Войти и разблокировать ключ</span>
+              <ArrowRight className="w-3.5 h-3.5" />
             </>
           )}
         </button>
       </form>
-
-      <div className="p-4 rounded-xl border border-zinc-800/80 bg-zinc-950/30 text-xs text-zinc-400 flex items-start gap-2.5">
-        <Shield className="w-4 h-4 text-zinc-400 flex-shrink-0 mt-0.5" />
-        <span>
-          <b>Zero-Knowledge гарантия:</b> Сервер хранит зашифрованный блоб ключа. Пароль никогда не покидает браузер.
-        </span>
-      </div>
     </div>
   );
 }

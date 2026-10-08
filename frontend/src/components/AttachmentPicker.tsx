@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef } from 'react';
-import { Paperclip, X, ShieldAlert } from 'lucide-react';
+import { Paperclip, X } from 'lucide-react';
 import { ATTACHMENT_BUCKET_SIZES, getAttachmentBucketSize } from '@/lib/crypto';
 
 interface AttachmentPickerProps {
@@ -58,10 +58,10 @@ export function AttachmentPicker({ files, onChange, disabled }: AttachmentPicker
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={disabled}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-zinc-800 bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white text-xs font-medium transition-colors disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.08] text-zinc-300 hover:text-white text-xs font-mono transition-colors disabled:opacity-50"
         >
           <Paperclip className="w-3.5 h-3.5 text-zinc-400" />
-          <span>Прикрепить вложение (Evidence Upload)</span>
+          <span>Прикрепить вложение (Evidence)</span>
         </button>
 
         <span className="text-[10px] font-mono text-zinc-500">
@@ -71,11 +71,8 @@ export function AttachmentPicker({ files, onChange, disabled }: AttachmentPicker
 
       {files.length > 0 && (
         <div className="space-y-2 pt-1">
-          <div className="flex items-center gap-2 p-2 rounded-xl bg-zinc-950/70 border border-zinc-800/80 text-[11px] text-zinc-400">
-            <ShieldAlert className="w-3.5 h-3.5 text-zinc-400 flex-shrink-0" />
-            <span>
-              Метаданные (имя, MIME) зашифрованы E2EE. Файл будет дополнен паддингом до ближайшей корзины (256 КБ, 1 МБ, 5 МБ, 10 МБ).
-            </span>
+          <div className="p-2 rounded-md bg-black/40 border border-white/[0.06] text-[11px] font-mono text-zinc-400">
+            Метаданные (имя, MIME) зашифрованы E2EE. Файл будет дополнен паддингом до корзины (256 КБ, 1 МБ, 5 МБ, 10 МБ).
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -90,7 +87,7 @@ export function AttachmentPicker({ files, onChange, disabled }: AttachmentPicker
               return (
                 <div
                   key={`${file.name}-${idx}`}
-                  className="flex items-center justify-between gap-2 p-2.5 rounded-xl border border-zinc-800 bg-black text-xs"
+                  className="flex items-center justify-between gap-2 p-2.5 rounded-md border border-white/[0.08] bg-black/60 text-xs"
                 >
                   <div className="min-w-0 flex-1">
                     <p className="text-zinc-200 font-medium truncate" title={file.name}>
@@ -105,7 +102,7 @@ export function AttachmentPicker({ files, onChange, disabled }: AttachmentPicker
                     type="button"
                     onClick={() => handleRemove(idx)}
                     disabled={disabled}
-                    className="p-1 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-900 transition-colors"
+                    className="p-1 rounded-md text-zinc-500 hover:text-red-400 hover:bg-white/[0.04] transition-colors"
                     title="Удалить файл"
                   >
                     <X className="w-3.5 h-3.5" />

@@ -11,7 +11,7 @@ interface AttachmentListProps {
   title?: string;
 }
 
-export function AttachmentList({ attachments, title = 'Прикреплённые доказательства (Zero-Knowledge Evidence):' }: AttachmentListProps) {
+export function AttachmentList({ attachments, title = 'Вложения (Zero-Knowledge Evidence):' }: AttachmentListProps) {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
@@ -55,13 +55,13 @@ export function AttachmentList({ attachments, title = 'Прикреплённы�
 
   return (
     <div className="space-y-2 pt-2">
-      <div className="text-[11px] font-mono text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
-        <File className="w-3.5 h-3.5 text-zinc-400" />
+      <div className="text-[11px] font-mono text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+        <File className="w-3.5 h-3.5 text-zinc-500" />
         <span>{title} ({attachments.length})</span>
       </div>
 
       {downloadError && (
-        <div className="p-2 rounded-lg bg-red-950/20 border border-red-500/30 text-red-300 text-xs flex items-center gap-2">
+        <div className="p-2 rounded-md bg-red-950/20 border border-red-500/30 text-red-300 text-xs flex items-center gap-2">
           <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
           <span>{downloadError}</span>
         </div>
@@ -74,7 +74,7 @@ export function AttachmentList({ attachments, title = 'Прикреплённы�
           return (
             <div
               key={att.attachmentId}
-              className="flex items-center justify-between gap-3 p-2.5 rounded-xl border border-zinc-800 bg-zinc-950/80 hover:border-zinc-700 transition-colors"
+              className="flex items-center justify-between gap-3 p-2.5 rounded-md border border-white/[0.08] bg-black/60 hover:border-white/20 transition-colors"
             >
               <div className="min-w-0 flex-1">
                 <div className="text-xs font-medium text-zinc-200 truncate" title={att.originalName}>
@@ -92,7 +92,7 @@ export function AttachmentList({ attachments, title = 'Прикреплённы�
                 type="button"
                 onClick={() => handleDownload(att)}
                 disabled={isDownloading}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-zinc-700 bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white text-xs transition-colors flex-shrink-0 disabled:opacity-50"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] hover:bg-white/[0.08] text-zinc-300 hover:text-white text-xs font-mono transition-colors flex-shrink-0 disabled:opacity-50"
                 title="Скачать и расшифровать локально"
               >
                 {isDownloading ? (
