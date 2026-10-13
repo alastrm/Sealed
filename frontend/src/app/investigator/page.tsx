@@ -343,7 +343,7 @@ export default function InvestigatorPortalPage() {
             required
           />
           <p className="text-[11px] text-zinc-500 font-mono">
-            investigator@sealed.org / Password123!
+            compliance.lead@integrity-trust.corp / Correct-Horse-Battery-Staple-2026!#
           </p>
         </div>
 
