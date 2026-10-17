@@ -1,17 +1,21 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { Download, Loader2, AlertCircle } from 'lucide-react';
-import { api } from '@/lib/api';
-import { decryptAttachmentFile, triggerSafeDownload } from '@/lib/crypto';
-import type { AttachmentMetadata } from '@/lib/types';
+import { useState } from "react";
+import { Download, Loader2, File } from "lucide-react";
+import { api } from "@/lib/api";
+import { decryptAttachmentFile, triggerSafeDownload } from "@/lib/crypto";
+import type { AttachmentMetadata } from "@/lib/types";
+import { Notice } from "./ui";
 
 interface AttachmentListProps {
   attachments: AttachmentMetadata[];
   title?: string;
 }
 
-export function AttachmentList({ attachments, title = 'Attachments:' }: AttachmentListProps) {
+export function AttachmentList({
+  attachments,
+  title = "Attachments",
+}: AttachmentListProps) {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
@@ -37,13 +41,13 @@ export function AttachmentList({ attachments, title = 'Attachments:' }: Attachme
         ciphertextBytes,
         att.keyBase64,
         att.nonceBase64,
-        att.bucketSize
+        att.bucketSize,
       );
 
       triggerSafeDownload(decryptedBytes, att.originalName, att.mimeType);
     } catch (err: unknown) {
       console.error(err);
-      const msg = err instanceof Error ? err.message : 'Failed to decrypt file';
+      const msg = err instanceof Error ? err.message : "Failed to decrypt file";
       setDownloadError(msg);
     } finally {
       setDownloadingId(null);
@@ -51,45 +55,32 @@ export function AttachmentList({ attachments, title = 'Attachments:' }: Attachme
   }
 
   return (
-    <div className="space-y-2 pt-1">
-      <div className="text-xs text-zinc-400">
-        {title}
-      </div>
+    <div className="attachment-list">
+      <div className="muted">{title}</div>
 
-      {downloadError && (
-        <div className="p-2 rounded-lg bg-red-950/20 border border-red-500/20 text-red-300 text-xs flex items-center gap-2">
-          <AlertCircle className="w-3.5 h-3.5 text-red-400 flex-shrink-0" />
-          <span>{downloadError}</span>
-        </div>
-      )}
+      {downloadError && <Notice>{downloadError}</Notice>}
 
-      <div className="flex flex-wrap gap-2">
+      <div className="file-chips">
         {attachments.map((att) => {
           const isDownloading = downloadingId === att.attachmentId;
 
           return (
-            <div
-              key={att.attachmentId}
-              className="inline-flex items-center gap-3 px-3 py-2 rounded-lg bg-neutral-900/60 border border-white/5 text-xs text-zinc-200"
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="truncate max-w-[160px]" title={att.originalName}>
-                  {att.originalName}
-                </span>
-                <span className="text-zinc-500 font-mono text-[11px]">
-                  {formatBytes(att.sizeBytes)}
-                </span>
-              </div>
+            <div key={att.attachmentId} className="file-chip">
+              <File size={13} />
+              <span className="file-name" title={att.originalName}>
+                {att.originalName}
+              </span>
+              <span className="file-size">{formatBytes(att.sizeBytes)}</span>
 
               <button
                 type="button"
                 onClick={() => handleDownload(att)}
-                disabled={isDownloading}
-                className="text-zinc-400 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
-                title="Download file"
+                disabled={downloadingId !== null}
+                className="btn btn-ghost btn-icon"
+                aria-label={`Download ${att.originalName}`}
               >
                 {isDownloading ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <Loader2 size={14} className="spin" />
                 ) : (
                   <Download className="w-3.5 h-3.5" />
                 )}

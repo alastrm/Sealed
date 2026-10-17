@@ -1,71 +1,87 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Copy, Check, ArrowRight, Loader2 } from 'lucide-react';
-import { api } from '@/lib/api';
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import {
+  ArrowRight,
+  Check,
+  CheckCircle2,
+  Copy,
+  FileText,
+  KeyRound,
+  Loader2,
+  LockKeyhole,
+} from "lucide-react";
+import { api } from "@/lib/api";
 import {
   encryptAttachmentFile,
   encryptReport,
   generateReporterBundle,
   packMessagePayload,
-} from '@/lib/crypto';
-import type { AttachmentMetadata } from '@/lib/types';
-import { AttachmentPicker } from '@/components/AttachmentPicker';
+} from "@/lib/crypto";
+import type { AttachmentMetadata } from "@/lib/types";
+import { AttachmentPicker } from "@/components/AttachmentPicker";
+import {
+  Notice,
+  PageHeading,
+  PageLayout,
+  ReportingGuide,
+} from "@/components/ui";
 
 export default function ReporterHomePage() {
   const router = useRouter();
-  const [reportText, setReportText] = useState('');
+  const [reportText, setReportText] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [progress, setProgress] = useState("");
   const [error, setError] = useState<string | null>(null);
-
-  // Success state after submission
   const [createdMnemonic, setCreatedMnemonic] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!reportText.trim()) return;
-
+  async function handleSubmit(event: React.FormEvent) {
+    event.preventDefault();
+    if (!reportText.trim() || isSubmitting) return;
     setIsSubmitting(true);
     setError(null);
+    setProgress("Preparing encryption…");
 
     try {
-      // 1. Fetch investigator's public key from backend
       const pubKeyData = await api.getInvestigatorPublicKey();
-
-      // 2. Generate 12-word BIP-39 mnemonic & derive secrets
       const { mnemonic, secrets } = await generateReporterBundle();
-
-      // 3. Process and encrypt all attachments
       const attachmentsMeta: AttachmentMetadata[] = [];
       const attachmentIds: string[] = [];
 
       for (const file of selectedFiles) {
+        setProgress(
+          `Encrypting attachment ${attachmentsMeta.length + 1} of ${selectedFiles.length}…`,
+        );
         const fileBuffer = await file.arrayBuffer();
         const fileBytes = new Uint8Array(fileBuffer);
-
         const encrypted = await encryptAttachmentFile(
           fileBytes,
           file.name,
-          file.type
+          file.type,
         );
-
+        setProgress(
+          `Uploading encrypted attachment ${attachmentsMeta.length + 1} of ${selectedFiles.length}…`,
+        );
         const uploadRes = await api.uploadAttachment(encrypted.fileBlob);
         encrypted.metadata.attachmentId = uploadRes.attachmentId;
-
         attachmentsMeta.push(encrypted.metadata);
         attachmentIds.push(uploadRes.attachmentId);
       }
 
-      // 4. Pack plaintext with attachment metadata
-      const packedPayload = packMessagePayload(reportText.trim(), attachmentsMeta);
-
-      // 5. Encrypt packed payload using crypto_box_seal
-      const encryptedReport = await encryptReport(packedPayload, pubKeyData.publicKey);
-
-      // 6. Submit to backend
+      setProgress("Encrypting your report…");
+      const packedPayload = packMessagePayload(
+        reportText.trim(),
+        attachmentsMeta,
+      );
+      const encryptedReport = await encryptReport(
+        packedPayload,
+        pubKeyData.publicKey,
+      );
+      setProgress("Sending encrypted report…");
       await api.createCase({
         caseId: crypto.randomUUID(),
         reporterPublicKey: secrets.publicKeyBase64,
@@ -74,151 +90,220 @@ export default function ReporterHomePage() {
         attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
       });
 
-      // 7. Store in session & set state
-      sessionStorage.setItem('sealed_mnemonic', mnemonic);
+      sessionStorage.setItem("sealed_mnemonic", mnemonic);
       setCreatedMnemonic(mnemonic);
-      setReportText('');
+      setReportText("");
       setSelectedFiles([]);
     } catch (err: unknown) {
       console.error(err);
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      setError(msg || 'Failed to submit report. Please check if backend is running.');
+      const message = err instanceof Error ? err.message : "Unknown error";
+      setError(message || "Failed to submit report. Please try again.");
     } finally {
       setIsSubmitting(false);
+      setProgress("");
     }
   }
 
-  function handleCopyMnemonic() {
+  async function handleCopyMnemonic() {
     if (!createdMnemonic) return;
-    navigator.clipboard.writeText(createdMnemonic);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setCopyError(null);
+    try {
+      await navigator.clipboard.writeText(createdMnemonic);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopyError(
+        "Clipboard access is unavailable. Select and copy the words below, or write them down in order.",
+      );
+    }
   }
 
   function handleGoToTrack() {
-    if (createdMnemonic) {
-      sessionStorage.setItem('sealed_mnemonic', createdMnemonic);
-    }
-    router.push('/track');
+    if (createdMnemonic)
+      sessionStorage.setItem("sealed_mnemonic", createdMnemonic);
+    router.push("/track");
   }
 
-  // --- SCREEN: CASE CREATED SUCCESS ---
   if (createdMnemonic) {
-    const words = createdMnemonic.split(' ');
-
     return (
-      <div className="space-y-6 animate-in fade-in duration-200">
-        <div className="space-y-2">
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-            Access Key
-          </h1>
-          <p className="text-sm font-light text-zinc-400 leading-relaxed">
-            Save these 12 words. It is the only way to read replies or follow up.
-          </p>
+      <PageLayout aside={<ReportingGuide mode="track" />}>
+        <div className="success-heading" role="status">
+          <CheckCircle2 size={16} /> Report submitted successfully
         </div>
-
-        <div className="space-y-4 pt-2">
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {words.map((word, idx) => (
-              <div
-                key={idx}
-                className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-neutral-900/50 border border-white/5 font-mono text-xs select-all"
-              >
-                <span className="text-zinc-600 w-4 text-right">{idx + 1}.</span>
-                <span className="text-zinc-200 font-medium">{word}</span>
+        <PageHeading
+          label="Your next step"
+          title="Keep your access key safe"
+          description="These 12 words are your way back to this report. Save them in order to read replies and continue the conversation."
+        />
+        <section className="panel" aria-labelledby="access-key-title">
+          <div className="panel-header">
+            <h2 id="access-key-title" className="panel-heading">
+              <KeyRound size={15} /> Your access key
+            </h2>
+            <span className="panel-meta">12 words</span>
+          </div>
+          <div className="panel-body">
+            <Notice variant="info">
+              Keep this key private. Anyone with these words can access your
+              conversation.
+            </Notice>
+            <ol className="phrase-grid" aria-label="Access key words in order">
+              {createdMnemonic.split(" ").map((word, index) => (
+                <li className="phrase-word" key={index}>
+                  <span aria-hidden="true">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                  <strong>{word}</strong>
+                </li>
+              ))}
+            </ol>
+            {copyError && (
+              <div className="stack-sm">
+                <Notice>{copyError}</Notice>
+                <p className="mono field-description">{createdMnemonic}</p>
               </div>
-            ))}
+            )}
+            <div className="form-actions success-actions">
+              <button
+                type="button"
+                className="btn"
+                onClick={handleCopyMnemonic}
+              >
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+                {copied ? "Copied to clipboard" : "Copy access key"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleGoToTrack}
+              >
+                Open conversation
+                <ArrowRight size={14} />
+              </button>
+            </div>
           </div>
-
-          <div className="flex items-center gap-3 pt-2">
-            <button
-              onClick={handleCopyMnemonic}
-              className="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg bg-neutral-900 hover:bg-neutral-800 text-xs text-zinc-300 transition-colors border border-white/5 cursor-pointer"
-            >
-              {copied ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Copied</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3.5 h-3.5 text-zinc-400" />
-                  <span>Copy words</span>
-                </>
-              )}
-            </button>
-
-            <button
-              onClick={handleGoToTrack}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] text-xs font-medium hover:bg-white transition-colors cursor-pointer"
-            >
-              <span>Open conversation</span>
-              <ArrowRight className="w-3.5 h-3.5" />
-            </button>
+        </section>
+        <div className="access-note">
+          <LockKeyhole size={16} />
+          <div>
+            <h3>No account to remember. Just your key.</h3>
+            <p>
+              You can return to Track a report and enter these words whenever
+              you need to follow up.
+            </p>
           </div>
         </div>
-      </div>
+      </PageLayout>
     );
   }
 
-  // --- SCREEN: INITIAL SUBMISSION FORM ---
   return (
-    <div className="space-y-6 animate-in fade-in duration-200">
-      <div className="space-y-2">
-        <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-          Anonymous Drop
-        </h1>
-        <p className="text-sm font-light text-zinc-400 leading-relaxed">
-          Encrypted in your browser before sending. The server never sees plaintext.
-        </p>
-      </div>
-
-      <form onSubmit={handleSubmit} className="space-y-4 pt-2">
-        <div>
+    <PageLayout aside={<ReportingGuide />}>
+      <PageHeading
+        label="Make your voice heard"
+        title="Submit a report"
+        description="Share what happened, in your own words. Your report is encrypted in your browser before it’s sent."
+      />
+      <form onSubmit={handleSubmit} className="panel" aria-busy={isSubmitting}>
+        <div className="panel-header">
+          <h2 className="panel-heading">
+            <FileText size={15} /> Report details
+          </h2>
+          <span className="panel-meta">Required</span>
+        </div>
+        <div className="panel-body">
+          <label className="field-label" htmlFor="report">
+            What would you like to report?
+          </label>
           <textarea
             id="report"
-            rows={8}
+            className="input report-editor"
+            rows={10}
             value={reportText}
-            onChange={(e) => setReportText(e.target.value)}
-            placeholder="Describe the incident: facts, dates, entities involved..."
-            className="w-full rounded-lg bg-neutral-900/60 border border-white/10 px-4 py-3.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/20 transition-colors font-sans resize-y leading-relaxed"
+            onChange={(event) => setReportText(event.target.value)}
+            placeholder={
+              "Describe the incident in as much detail as you can.\n\nWhat happened? When and where did it happen? Who was involved?"
+            }
             required
+            disabled={isSubmitting}
+            aria-describedby="report-hint"
           />
+          <div className="editor-meta">
+            <span id="report-hint">
+              Include the details that will help someone understand.
+            </span>
+            <span>{reportText.length.toLocaleString()} chars</span>
+          </div>
         </div>
-
         <AttachmentPicker
           files={selectedFiles}
           onChange={setSelectedFiles}
           disabled={isSubmitting}
         />
-
         {error && (
-          <div className="p-3 rounded-lg bg-red-950/20 border border-red-500/20 text-red-300 text-xs">
-            {error}
+          <div className="form-notice">
+            <Notice>
+              <strong>We couldn’t submit your report.</strong>
+              <br />
+              {error} Your draft is still here.
+            </Notice>
           </div>
         )}
-
-        <div className="flex items-center justify-between pt-2">
-          <span className="text-xs text-zinc-500 font-mono">
-            {reportText.length > 0 ? `${reportText.length} chars` : ''}
-          </span>
-
+        <div className="panel-footer">
+          <div aria-live="polite">
+            {isSubmitting ? (
+              <span className="progress-feedback">
+                <Loader2 size={13} className="spin" />
+                {progress}
+              </span>
+            ) : (
+              <span className="privacy-note">
+                <LockKeyhole size={13} /> Your content is encrypted before
+                sending
+              </span>
+            )}
+          </div>
           <button
+            className="btn btn-primary"
             type="submit"
             disabled={isSubmitting || !reportText.trim()}
-            className="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] text-sm font-medium hover:bg-white disabled:opacity-40 transition-all cursor-pointer"
           >
             {isSubmitting ? (
               <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0a0a0a]" />
-                <span>Encrypting...</span>
+                <Loader2 size={14} className="spin" />
+                Submitting…
               </>
             ) : (
-              <span>Submit report</span>
+              <>
+                Submit report
+                <ArrowRight size={14} />
+              </>
             )}
           </button>
         </div>
       </form>
-    </div>
+      <section className="below-panel" aria-labelledby="next-steps-title">
+        <h2 id="next-steps-title" className="section-label">
+          What happens next
+        </h2>
+        <div className="next-steps">
+          <div className="next-step">
+            <span>01</span>
+            <h3>Save your access key</h3>
+            <p>Receive 12 words to return to your report.</p>
+          </div>
+          <div className="next-step">
+            <span>02</span>
+            <h3>Your report is reviewed</h3>
+            <p>An investigator can decrypt and review your report.</p>
+          </div>
+          <div className="next-step">
+            <span>03</span>
+            <h3>Continue the conversation</h3>
+            <p>Use your key to check for replies or add information.</p>
+          </div>
+        </div>
+      </section>
+    </PageLayout>
   );
 }

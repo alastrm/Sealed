@@ -3,7 +3,7 @@
 A pet project demonstrating client-side WebAssembly cryptography with an untrusted, blind backend.
 
 - **Backend:** FastAPI (Python 3.12), SQLite / PostgreSQL, SlowAPI rate limiting
-- **Frontend:** Next.js 16 (React 19, TypeScript), Tailwind CSS, IBM Plex Sans / Mono
+- **Frontend:** Next.js 16 (React 19, TypeScript), Tailwind CSS, local system fonts
 - **Cryptography:** libsodium (`libsodium-wrappers-sumo` via WebAssembly), BIP-39
 
 ---
@@ -97,13 +97,14 @@ Sealed/
 │   │   │   ├── api.ts       # Backend API client
 │   │   │   └── types.ts     # DTO types
 │   │   ├── components/
-│   │   │   ├── ParticlesBackground.tsx # Canvas background
-│   │   │   ├── Navbar.tsx              # Minimal navigation
+│   │   │   ├── AppShell.tsx            # Responsive navigation and application shell
+│   │   │   ├── ui.tsx                  # Shared surfaces, notices, status, and guidance
+│   │   │   ├── Conversation.tsx        # Message thread and reply composer
 │   │   │   ├── AuditBadge.tsx          # BLAKE2b audit chain status
 │   │   │   ├── AttachmentList.tsx      # In-memory decryption & download
 │   │   │   └── AttachmentPicker.tsx    # Evidence upload picker
 │   │   └── app/
-│   │       ├── layout.tsx              # IBM Plex Sans / Mono fonts, root shell
+│   │       ├── layout.tsx              # Root metadata and shared application shell
 │   │       ├── page.tsx                # Report submission & 12-word mnemonic screen
 │   │       ├── track/page.tsx          # Case tracking & message thread
 │   │       └── investigator/page.tsx   # Investigator login & dashboard

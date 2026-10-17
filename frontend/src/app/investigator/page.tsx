@@ -1,21 +1,30 @@
-'use client';
+"use client";
 
-import { useState } from 'react';
+import { useState } from "react";
 import {
-  Unlock,
-  AlertTriangle,
-  Loader2,
   FileText,
-  Send,
-  CheckCircle2,
+  Inbox,
+  Loader2,
+  LockKeyhole,
   LogOut,
+  MessageSquare,
   RefreshCw,
-} from 'lucide-react';
-import { useInvestigatorSession } from '@/hooks/useInvestigatorSession';
-import type { InvestigatorCaseListItem } from '@/lib/types';
-import { AuditBadge } from '@/components/AuditBadge';
-import { AttachmentList } from '@/components/AttachmentList';
-import { AttachmentPicker } from '@/components/AttachmentPicker';
+  ShieldCheck,
+  Unlock,
+} from "lucide-react";
+import { useInvestigatorSession } from "@/hooks/useInvestigatorSession";
+import type { InvestigatorCaseListItem } from "@/lib/types";
+import { AuditBadge } from "@/components/AuditBadge";
+import { AttachmentList } from "@/components/AttachmentList";
+import { MessageThread, ReplyComposer } from "@/components/Conversation";
+import {
+  EmptyState,
+  Notice,
+  PageHeading,
+  PageLayout,
+  ReportingGuide,
+  StatusBadge,
+} from "@/components/ui";
 
 export default function InvestigatorPortalPage() {
   const {
@@ -48,330 +57,300 @@ export default function InvestigatorPortalPage() {
     logout,
     fetchAuditVerification,
   } = useInvestigatorSession();
-
-  // Local form state for draft reply
-  const [replyText, setReplyText] = useState('');
+  const [replyText, setReplyText] = useState("");
   const [replyFiles, setReplyFiles] = useState<File[]>([]);
 
-  async function handleLogin(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleLogin(event: React.FormEvent) {
+    event.preventDefault();
     await login();
   }
 
-  async function handleSelectCase(c: InvestigatorCaseListItem) {
-    setReplyText('');
+  async function handleSelectCase(item: InvestigatorCaseListItem) {
+    setReplyText("");
     setReplyFiles([]);
-    await selectCase(c);
+    await selectCase(item);
   }
 
-  async function handleSendReply(e: React.FormEvent) {
-    e.preventDefault();
-    const success = await sendReply(replyText, replyFiles);
-    if (success) {
-      setReplyText('');
+  async function handleSendReply(event: React.FormEvent) {
+    event.preventDefault();
+    if (await sendReply(replyText, replyFiles)) {
+      setReplyText("");
       setReplyFiles([]);
     }
   }
 
-  // =========================================================================
-  // VIEW: UNLOCKED INVESTIGATOR DASHBOARD
-  // =========================================================================
+  function handleLogout() {
+    setReplyText("");
+    setReplyFiles([]);
+    logout();
+  }
+
   if (account && privateKey) {
     return (
-      <div className="space-y-6 animate-in fade-in duration-200">
-        {/* Top Investigator Bar */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-white/5">
-          <div className="space-y-0.5">
-            <div className="text-sm font-medium text-white flex items-center gap-2">
-              <span>{account.username}</span>
-              <span className="text-xs text-emerald-400 font-mono">• key unlocked</span>
-            </div>
-            <p className="text-xs text-zinc-500 font-mono truncate max-w-sm sm:max-w-md">
-              {account.publicKey}
-            </p>
+      <div className="page-content investigator-page">
+        <div className="page-heading investigator-heading">
+          <div>
+            <div className="eyebrow">Investigator workspace</div>
+            <h1>Incoming reports</h1>
+            <p className="account-info">{account.username}</p>
           </div>
-
-          <div className="flex items-center gap-3">
+          <div className="heading-actions">
             <button
+              type="button"
+              className="btn"
               onClick={loadCases}
               disabled={isLoadingCases}
-              className="inline-flex items-center gap-1.5 text-xs text-zinc-400 hover:text-white transition-colors cursor-pointer disabled:opacity-50"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingCases ? 'animate-spin' : ''}`} />
-              <span>Refresh</span>
+              <RefreshCw size={14} className={isLoadingCases ? "spin" : ""} />
+              Refresh
             </button>
             <button
-              onClick={logout}
-              className="inline-flex items-center gap-1.5 text-xs text-zinc-500 hover:text-red-400 transition-colors cursor-pointer"
+              type="button"
+              className="btn btn-ghost"
+              onClick={handleLogout}
             >
-              <LogOut className="w-3.5 h-3.5" />
-              <span>Lock</span>
+              <LogOut size={14} />
+              Lock workspace
             </button>
           </div>
         </div>
-
-        {/* Two-Column Workspace */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
-          {/* Left Column: Cases List */}
-          <div className="md:col-span-5 space-y-2">
-            <div className="text-xs text-zinc-400 font-medium pb-2 flex items-center justify-between">
-              <span>Reports ({cases.length})</span>
-              {isLoadingCases && <Loader2 className="w-3 h-3 text-zinc-500 animate-spin" />}
-            </div>
-
+        <details className="account-key">
+          <summary>
+            <span>Key unlocked locally · View public key</span>
+          </summary>
+          <code>{account.publicKey}</code>
+        </details>
+        {actionError && !selectedCase && (
+          <div className="stack">
+            <Notice>{actionError}</Notice>
+            <span />
+          </div>
+        )}
+        <div className="investigator-workspace">
+          <section className="case-list" aria-label="Incoming reports">
+            <h2 className="case-list-header">
+              <Inbox size={15} />
+              All reports<span className="count">{cases.length}</span>
+              {isLoadingCases && <Loader2 size={13} className="spin" />}
+            </h2>
             {cases.length === 0 ? (
-              <div className="py-8 text-center text-xs text-zinc-500">
-                {isLoadingCases ? 'Loading...' : 'No reports yet.'}
-              </div>
+              isLoadingCases ? (
+                <div className="loading-state" role="status">
+                  <Loader2 size={15} className="spin" />
+                  Loading reports…
+                </div>
+              ) : (
+                <EmptyState icon={Inbox} title="No reports yet">
+                  Incoming reports will appear here.
+                </EmptyState>
+              )
             ) : (
-              <div className="space-y-1.5 max-h-[500px] overflow-y-auto pr-1">
-                {cases.map((c) => {
-                  const isSelected = c.id === selectedCaseId;
-                  return (
-                    <div
-                      key={c.id}
-                      onClick={() => handleSelectCase(c)}
-                      className={`p-3 rounded-lg text-left cursor-pointer transition-colors ${
-                        isSelected
-                          ? 'bg-neutral-800 text-white'
-                          : 'bg-neutral-900/40 hover:bg-neutral-900 text-zinc-300'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2 mb-1">
-                        <span className="font-mono text-xs font-medium truncate">
-                          {c.id.slice(0, 16)}...
-                        </span>
-                        <span className="text-[10px] text-zinc-400">
-                          {c.status}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center justify-between text-[11px] text-zinc-500 font-mono">
-                        <span>{new Date(c.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
-                        <span>{c.messageCount} msg</span>
-                      </div>
-                    </div>
-                  );
-                })}
+              <div className="case-list-scroll">
+                {cases.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`case-row ${item.id === selectedCaseId ? "selected" : ""}`}
+                    aria-pressed={item.id === selectedCaseId}
+                    onClick={() => handleSelectCase(item)}
+                    disabled={isDecryptingReport || isSendingReply}
+                  >
+                    <span className="case-row-top">
+                      <FileText size={14} />
+                      {item.id.slice(0, 8).toUpperCase()}
+                    </span>
+                    <span className="case-row-bottom">
+                      <StatusBadge status={item.status} />
+                      <time className="case-row-date" dateTime={item.createdAt}>
+                        {new Date(item.createdAt).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </time>
+                    </span>
+                    <span className="case-row-messages">
+                      <MessageSquare size={11} />
+                      {item.messageCount}{" "}
+                      {item.messageCount === 1 ? "message" : "messages"}
+                    </span>
+                  </button>
+                ))}
               </div>
             )}
-          </div>
-
-          {/* Right Column: Case Detail & Response Form */}
-          <div className="md:col-span-7 space-y-5">
+          </section>
+          <section className="case-detail" aria-label="Selected report">
             {!selectedCase ? (
-              <div className="py-16 text-center text-xs text-zinc-500 space-y-2">
-                <FileText className="w-6 h-6 mx-auto text-zinc-600" />
-                <p>Select a report from the list.</p>
-              </div>
+              <EmptyState
+                icon={FileText}
+                title="Select a report to get started"
+              >
+                Review its content, check the audit chain, and respond to the
+                reporter.
+              </EmptyState>
             ) : (
-              <div className="space-y-5">
-                <div className="space-y-2 pb-3 border-b border-white/5">
-                  <div className="text-xs text-zinc-500 font-mono truncate select-all">
-                    ID: {selectedCase.id}
-                  </div>
-                  <AuditBadge
-                    verification={auditVerification}
-                    isLoading={isVerifyingAudit}
-                    onRefresh={() => selectedCaseId && fetchAuditVerification(selectedCaseId)}
-                  />
-                </div>
-
-                {/* Decrypted Report */}
-                <div className="space-y-2">
-                  <div className="text-xs text-zinc-400 font-medium">Report content:</div>
-                  {isDecryptingReport ? (
-                    <div className="p-6 text-center text-xs text-zinc-500 flex items-center justify-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin text-zinc-500" />
-                      <span>Decrypting...</span>
-                    </div>
-                  ) : decryptedReportText ? (
-                    <div className="space-y-2">
-                      <div className="p-4 rounded-lg bg-neutral-900/50 border border-white/5 text-sm text-zinc-100 whitespace-pre-wrap leading-relaxed font-sans">
-                        {decryptedReportText}
-                      </div>
-                      {reportAttachments.length > 0 && (
-                        <AttachmentList attachments={reportAttachments} />
-                      )}
-                    </div>
-                  ) : (
-                    <div className="p-3 text-xs text-red-300">
-                      Failed to decrypt report.
-                    </div>
-                  )}
-                </div>
-
-                {/* Dialogue Thread */}
-                {threadMessages.length > 0 && (
-                  <div className="space-y-3 pt-3 border-t border-white/5">
-                    <div className="text-xs text-zinc-400 font-medium">
-                      Message thread ({threadMessages.length})
-                    </div>
-                    <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
-                      {threadMessages.map((msg, idx) => {
-                        const isFromReporter = (msg.senderType || msg.sender) === 'REPORTER';
-                        return (
-                          <div
-                            key={msg.id || idx}
-                            className="p-3.5 rounded-lg bg-neutral-900/40 border border-white/5 space-y-1.5"
-                          >
-                            <div className="flex items-center justify-between text-xs">
-                              <span className="font-medium text-zinc-300">
-                                {isFromReporter ? 'Reporter' : 'Investigator (You)'}
-                              </span>
-                              <span className="text-[11px] text-zinc-500 font-mono">
-                                {new Date(msg.createdAt).toLocaleString('en-US')}
-                              </span>
-                            </div>
-                            <p className="text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed font-sans">
-                              {msg.decryptedText}
-                            </p>
-                            {msg.attachments && msg.attachments.length > 0 && (
-                              <AttachmentList attachments={msg.attachments} />
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Reply Form */}
-                <form onSubmit={handleSendReply} className="space-y-3 pt-3 border-t border-white/5">
-                  <div className="space-y-1.5">
-                    <label htmlFor="reply" className="text-xs text-zinc-400 font-medium block">
-                      Reply to reporter:
-                    </label>
-                    <textarea
-                      id="reply"
-                      rows={4}
-                      value={replyText}
-                      onChange={(e) => setReplyText(e.target.value)}
-                      placeholder="Type your response..."
-                      className="w-full rounded-lg bg-neutral-900/60 border border-white/10 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/20 transition-colors resize-y leading-relaxed font-sans"
-                      required
+              <>
+                <header className="case-detail-header">
+                  <StatusBadge status={selectedCase.status} />
+                  <h2>Report {selectedCase.id.slice(0, 8).toUpperCase()}</h2>
+                  <p className="case-id mono">{selectedCase.id}</p>
+                  <div className="conversation-meta">
+                    <AuditBadge
+                      verification={auditVerification}
+                      isLoading={isVerifyingAudit}
+                      onRefresh={() => fetchAuditVerification(selectedCase.id)}
                     />
                   </div>
-
-                  <AttachmentPicker
-                    files={replyFiles}
-                    onChange={setReplyFiles}
-                    disabled={isSendingReply}
-                  />
-
-                  {actionError && (
-                    <div className="p-3 rounded-lg bg-red-950/20 border border-red-500/20 text-red-300 text-xs flex gap-2">
-                      <AlertTriangle className="w-4 h-4 flex-shrink-0 text-red-400" />
-                      <span>{actionError}</span>
+                </header>
+                <div className="report-content">
+                  <h3 className="case-section-heading">
+                    <span>Original report</span>
+                    <span className="panel-meta">
+                      <LockKeyhole size={12} /> Decrypted locally
+                    </span>
+                  </h3>
+                  {isDecryptingReport ? (
+                    <div className="loading-state" role="status">
+                      <Loader2 size={15} className="spin" />
+                      Decrypting report…
                     </div>
+                  ) : decryptedReportText ? (
+                    <>
+                      <p className="report-body">{decryptedReportText}</p>
+                      <AttachmentList attachments={reportAttachments} />
+                    </>
+                  ) : (
+                    <Notice>
+                      Unable to decrypt this report. The key or report data may
+                      be invalid.
+                    </Notice>
                   )}
-
-                  {replySuccess && (
-                    <div className="p-3 rounded-lg border border-emerald-500/20 bg-emerald-950/20 text-emerald-300 text-xs flex items-center gap-2">
-                      <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-emerald-400" />
-                      <span>Reply encrypted and sent.</span>
-                    </div>
-                  )}
-
-                  <div className="flex justify-end pt-1">
-                    <button
-                      type="submit"
-                      disabled={isSendingReply || !replyText.trim()}
-                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] font-medium text-xs sm:text-sm hover:bg-white disabled:opacity-40 transition-all cursor-pointer"
-                    >
-                      {isSendingReply ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin text-[#0a0a0a]" />
-                          <span>Encrypting...</span>
-                        </>
-                      ) : (
-                        <>
-                          <span>Send reply</span>
-                          <Send className="w-3.5 h-3.5" />
-                        </>
-                      )}
-                    </button>
+                </div>
+                <div className="case-thread-header">
+                  <MessageSquare size={13} />
+                  Conversation
+                  <span className="count">{threadMessages.length}</span>
+                </div>
+                {isLoadingThread ? (
+                  <div className="loading-state" role="status">
+                    <Loader2 size={15} className="spin" />
+                    Loading conversation…
                   </div>
-                </form>
-              </div>
+                ) : threadMessages.length ? (
+                  <MessageThread
+                    messages={threadMessages}
+                    viewer="INVESTIGATOR"
+                  />
+                ) : (
+                  <EmptyState title="Start the conversation">
+                    Reply to acknowledge the report or ask for more information.
+                  </EmptyState>
+                )}
+                <ReplyComposer
+                  id="investigatorReply"
+                  text={replyText}
+                  onTextChange={setReplyText}
+                  files={replyFiles}
+                  onFilesChange={setReplyFiles}
+                  onSubmit={handleSendReply}
+                  isSending={isSendingReply}
+                  disabled={isLoadingThread}
+                  error={actionError}
+                  success={replySuccess}
+                  label="Reply to reporter"
+                />
+              </>
             )}
-          </div>
+          </section>
         </div>
       </div>
     );
   }
 
-  // =========================================================================
-  // VIEW: LOGIN SCREEN
-  // =========================================================================
   return (
-    <div className="max-w-md mx-auto space-y-6 pt-4 animate-in fade-in duration-200">
-      <div className="space-y-2">
-        <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-white">
-          Investigator Portal
-        </h1>
-        <p className="text-sm font-light text-zinc-400 leading-relaxed">
-          Sign in to decrypt incoming reports locally.
-        </p>
-      </div>
-
-      <form onSubmit={handleLogin} className="space-y-4 pt-2">
-        <div className="space-y-1.5">
-          <label htmlFor="username" className="block text-xs text-zinc-400">
-            Email or username
-          </label>
-          <input
-            id="username"
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            className="w-full rounded-lg bg-neutral-900/60 border border-white/10 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/20 transition-colors font-sans"
-            required
-          />
+    <PageLayout aside={<ReportingGuide mode="investigator" />}>
+      <PageHeading
+        label="Investigator workspace"
+        title="Access your workspace"
+        description="Sign in to review incoming reports and continue conversations with reporters."
+      />
+      <section className="panel login-panel" aria-labelledby="login-title">
+        <div className="panel-header">
+          <h2 className="panel-heading" id="login-title">
+            <ShieldCheck size={15} />
+            Investigator access
+          </h2>
+          <span className="panel-meta">
+            <LockKeyhole size={12} /> Locked
+          </span>
         </div>
-
-        <div className="space-y-1.5">
-          <label htmlFor="password" className="block text-xs text-zinc-400">
-            Password
-          </label>
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-lg bg-neutral-900/60 border border-white/10 px-4 py-2.5 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-white/20 transition-colors font-sans"
-            required
-          />
-          <p className="text-[11px] text-zinc-500 font-mono">
-            compliance.lead@integrity-trust.corp / Correct-Horse-Battery-Staple-2026!#
-          </p>
-        </div>
-
-        {loginError && (
-          <div className="p-3 rounded-lg bg-red-950/20 border border-red-500/20 text-red-300 text-xs flex gap-2">
-            <AlertTriangle className="w-4 h-4 flex-shrink-0 text-red-400" />
-            <span>{loginError}</span>
-          </div>
-        )}
-
-        <button
-          type="submit"
-          disabled={isUnlocking || !password.trim()}
-          className="w-full inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg bg-[#ededed] text-[#0a0a0a] font-medium text-sm hover:bg-white transition-all disabled:opacity-40 cursor-pointer"
+        <form
+          onSubmit={handleLogin}
+          className="panel-body form-fields"
+          aria-busy={isUnlocking}
         >
-          {isUnlocking ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin text-[#0a0a0a]" />
-              <span>Unlocking key...</span>
-            </>
-          ) : (
-            <>
-              <Unlock className="w-4 h-4" />
-              <span>Sign in</span>
-            </>
-          )}
-        </button>
-      </form>
-    </div>
+          <div>
+            <label htmlFor="username" className="field-label">
+              Email or username
+            </label>
+            <input
+              id="username"
+              type="text"
+              className="input"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              disabled={isUnlocking}
+              required
+            />
+          </div>
+          <div>
+            <label htmlFor="password" className="field-label">
+              Master password
+            </label>
+            <input
+              id="password"
+              type="password"
+              className="input"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              autoComplete="current-password"
+              disabled={isUnlocking}
+              required
+              aria-describedby="password-hint"
+            />
+            <p id="password-hint" className="field-description">
+              Used to unlock your investigator key in this browser.
+            </p>
+          </div>
+          {loginError && <Notice>{loginError}</Notice>}
+          <button
+            type="submit"
+            className="btn btn-primary btn-full"
+            disabled={isUnlocking || !password.trim() || !username.trim()}
+          >
+            {isUnlocking ? (
+              <>
+                <Loader2 size={14} className="spin" />
+                Unlocking key…
+              </>
+            ) : (
+              <>
+                <Unlock size={14} />
+                Unlock workspace
+              </>
+            )}
+          </button>
+        </form>
+        <div className="login-footer">
+          <LockKeyhole size={13} />
+          <span>
+            Your password unlocks your key locally. Reports are decrypted in
+            your browser.
+          </span>
+        </div>
+      </section>
+    </PageLayout>
   );
 }

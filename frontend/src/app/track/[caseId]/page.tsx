@@ -1,18 +1,19 @@
-'use client';
+"use client";
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { Loader2 } from "lucide-react";
 
 export default function TrackRedirectPage() {
   const router = useRouter();
 
   useEffect(() => {
-    router.replace('/track');
+    router.replace("/track");
   }, [router]);
 
   return (
-    <div className="flex items-center justify-center py-20 text-xs font-mono text-zinc-400">
-      Перенаправление на страницу проверки статуса...
+    <div className="loading-state" role="status">
+      <Loader2 size={16} className="spin" /> Opening report tracking…
     </div>
   );
 }
