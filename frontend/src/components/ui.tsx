@@ -150,11 +150,10 @@ export function ReportingGuide({
             </GuideItem>
             <GuideItem number="02" title="Add supporting evidence">
               Attach relevant documents or files. Each file must be smaller than
-              10 MB.
+              10 MiB.
             </GuideItem>
             <GuideItem number="03" title="Save your access key">
-              After submitting, you’ll receive 12 words to access replies and
-              follow up.
+              Before sending, save your 12 words to access replies and follow up.
             </GuideItem>
           </>
         ) : mode === "track" ? (
@@ -175,7 +174,8 @@ export function ReportingGuide({
         ) : (
           <>
             <GuideItem number="01" title="Unlock your workspace">
-              Your password unlocks your investigator key in this browser.
+              Your access key signs you in. Your master password unlocks the
+              decryption key in this browser.
             </GuideItem>
             <GuideItem number="02" title="Review incoming reports">
               Select a report to decrypt its content and view the conversation.

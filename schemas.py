@@ -26,6 +26,8 @@ class CreateCaseDto(CamelModel):
     """
     DTO sent by the anonymous reporter client to create a new case.
     """
+    protocol_version: int = 1
+    manifest: dict | None = None
     case_id: str = Field(
         default_factory=lambda: str(uuid.uuid4()),
         description="Client-generated or server-assigned UUID v4",
@@ -75,6 +77,8 @@ class CaseMessageDto(CamelModel):
     """
     Encrypted message DTO between investigator and reporter.
     """
+    protocol_version: int = 1
+    signature: str | None = None
     id: str
     case_id: str
     encrypted_response: str
@@ -89,6 +93,10 @@ class ReporterReplyDto(CamelModel):
     """
     DTO sent by reporter to submit a follow-up message in an existing case.
     """
+    protocol_version: int = 1
+    message_id: str | None = None
+    signature: str | None = None
+    attachment_ids: list[str] | None = None
     case_access_token_hash: str = Field(
         ...,
         min_length=1,
@@ -123,6 +131,9 @@ class AuditVerificationResponse(CamelModel):
     """
     Cryptographic verification result for a case's BLAKE2b audit hash chain.
     """
+    status: str = 'unavailable'
+    completeness_verified: bool = False
+    historical_baseline: bool = False
     is_valid: bool
     events_count: int
     broken_at: str | None = None
@@ -131,9 +142,13 @@ class AuditVerificationResponse(CamelModel):
 
 
 class CaseAccessResponseDto(CamelModel):
+    revision: int = 0
+    read_only: bool = True
     """
     Response for authorized reporter containing case status and decrypted message thread.
     """
+    protocol_version: int = 1
+    manifest: dict | None = None
     case_id: str
     status: CaseStatus
     created_at: datetime
@@ -150,15 +165,32 @@ class InvestigatorPublicKeyResponse(CamelModel):
     """
     Public key retrieval response for anonymous submission.
     """
+    protocol_version: int = 1
+    signing_public_key: str | None = None
+    identity_signature: str | None = None
     investigator_id: str
     username: str
     public_key: str
 
 
+class InvestigatorChallengeRequest(CamelModel):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+    username: str = Field(min_length=1, max_length=255, pattern=r"^[^\r\n]+$")
+
+
+class InvestigatorLoginRequest(InvestigatorChallengeRequest):
+    challenge_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    proof: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class InvestigatorCaseListItem(CamelModel):
+    revision: int = 0
+    read_only: bool = True
     """
     Case summary representation for the investigator dashboard.
     """
+    protocol_version: int = 1
+    manifest: dict | None = None
     id: str
     reporter_public_key: str
     encrypted_report: str
@@ -171,6 +203,10 @@ class InvestigatorResponseDto(CamelModel):
     """
     DTO sent by the investigator to encrypt and send a reply to a case.
     """
+    protocol_version: int = 1
+    message_id: str | None = None
+    signature: str | None = None
+    attachment_ids: list[str] | None = None
     case_id: str = Field(
         ...,
         description="UUID of the case being responded to",
@@ -206,3 +242,9 @@ class InvestigatorAccountDto(CamelModel):
     kdf_mem_limit: int
     kdf_algorithm: int
     created_at: datetime
+
+
+class CaseTransitionDto(CamelModel):
+    request_id: str
+    expected_revision: int = Field(ge=0)
+    target_status: CaseStatus

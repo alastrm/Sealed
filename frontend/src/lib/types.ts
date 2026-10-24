@@ -13,7 +13,39 @@ export interface InvestigatorAccountRecord {
   createdAt: string;
 }
 
+export interface IdentityPublic {
+  protocolVersion: number;
+  publicKey: string;
+  signingPublicKey: string;
+  identitySignature: string;
+}
+
+export interface IdentityPacket extends IdentityPublic {
+  encryptedPrivateKey: string;
+  privateKeyNonce: string;
+  kdfSalt: string;
+  kdfOpsLimit: number;
+  kdfMemLimit: number;
+  kdfAlgorithm: number;
+  active?: boolean;
+}
+
+export interface ReportManifest {
+  protocolVersion: number;
+  caseId: string;
+  reporterPublicKey: string;
+  reporterSigningPublicKey: string;
+  investigatorPublicKey: string;
+  investigatorSigningPublicKey: string;
+  identitySignature: string;
+  credentialCommitment: string;
+  encryptedReport: string;
+  reportSignature: string;
+}
+
 export interface CreateCaseDto {
+  protocolVersion: number;
+  manifest: ReportManifest;
   caseId: string;
   reporterPublicKey: string;
   caseAccessTokenHash: string;
@@ -48,6 +80,9 @@ export interface CaseAttachmentUploadResponse {
 }
 
 export interface AuditVerificationResponse {
+  status: 'consistent' | 'inconsistent' | 'legacy' | 'unavailable';
+  completenessVerified: boolean;
+  historicalBaseline: boolean;
   isValid: boolean;
   eventsCount: number;
   brokenAt: string | null;
@@ -56,6 +91,9 @@ export interface AuditVerificationResponse {
 }
 
 export interface CaseMessageDto {
+  protocolVersion: number;
+  signature: string | null;
+  authentication?: 'verified' | 'legacy' | 'invalid';
   id: string;
   caseId: string;
   encryptedResponse: string;
@@ -70,6 +108,10 @@ export interface CaseMessageDto {
 }
 
 export interface ReporterReplyDto {
+  attachmentIds?: string[];
+  protocolVersion: number;
+  messageId: string;
+  signature: string;
   caseAccessTokenHash: string;
   encryptedMessage: string;
   nonce: string;
@@ -77,6 +119,10 @@ export interface ReporterReplyDto {
 }
 
 export interface CaseAccessResponseDto {
+  protocolVersion: number;
+  revision: number;
+  readOnly: boolean;
+  manifest: ReportManifest | null;
   caseId: string;
   status: CaseStatus;
   createdAt: string;
@@ -85,6 +131,10 @@ export interface CaseAccessResponseDto {
 }
 
 export interface InvestigatorCaseListItem {
+  protocolVersion: number;
+  revision: number;
+  readOnly: boolean;
+  manifest: ReportManifest | null;
   id: string;
   reporterPublicKey: string;
   encryptedReport: string;
@@ -96,6 +146,10 @@ export interface InvestigatorCaseListItem {
 }
 
 export interface InvestigatorResponseDto {
+  attachmentIds?: string[];
+  protocolVersion: number;
+  messageId: string;
+  signature: string;
   caseId: string;
   encryptedResponse: string;
   nonce: string;
@@ -103,6 +157,9 @@ export interface InvestigatorResponseDto {
 }
 
 export interface InvestigatorPublicKeyResponse {
+  protocolVersion: number;
+  signingPublicKey: string | null;
+  identitySignature: string | null;
   investigatorId: string;
   username: string;
   publicKey: string;

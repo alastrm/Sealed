@@ -19,23 +19,19 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 import uuid
-from fastapi.testclient import TestClient
-
-from database import Base, engine
-from main import app
-from seed import seed_database
-
-client = TestClient(app)
+import secrets
+from test_support import isolated_api, login, WRITE_HEADERS, signed_case, signed_reply, encoded
 
 
-def run_tests() -> None:
+def run_tests(client, fixture) -> None:
+    token = encoded(secrets.token_bytes(32))
+    fixture.case_token = token
     print("==================================================================")
     print("E2EE Whistleblower Backend - API Integration Tests")
     print("==================================================================")
 
-    # 1. Reset tables and seed
-    Base.metadata.drop_all(bind=engine)
-    seed_database()
+    # The caller provides an isolated, freshly seeded database and authenticated
+    # cookie jar. Public reporter requests still require their own case credential.
 
     # Test 1: Get Investigator Public Key
     res = client.get("/api/v1/investigators/public-key")
@@ -43,17 +39,12 @@ def run_tests() -> None:
     pubkey_data = res.json()
     assert "publicKey" in pubkey_data, "Response missing camelCase 'publicKey'"
     assert "investigatorId" in pubkey_data, "Response missing camelCase 'investigatorId'"
-    assert pubkey_data["publicKey"] == "06Aobu71x1uxZri5AGN6kik/eziAOfHw3Co03wg20Tg="
+    assert pubkey_data["publicKey"] == fixture.identity["publicKey"]
     print("[PASS] Test 1: GET /api/v1/investigators/public-key")
 
     # Test 2: Create New Case
     test_case_id = str(uuid.uuid4())
-    create_case_payload = {
-        "caseId": test_case_id,
-        "reporterPublicKey": "UZU6IUITmY2EwHGbDXq8DqUHkVXJppubw8Gazk/B9WE=",
-        "caseAccessTokenHash": "546WDnBX9BKWBTACognIt9gyp0kvdqU2CW/boA0lldc=",
-        "encryptedReport": "2N/JedFSMDRXPds5+N+MTJO0zMBoU0XVru6MuFvliVlvMMNAeK63es/LPYEwUQCDSCa0...",
-    }
+    create_case_payload = signed_case(fixture, caseId=test_case_id, caseAccessTokenHash=token)
 
     res = client.post("/api/v1/cases", json=create_case_payload)
     assert res.status_code == 201, f"Expected 201, got {res.status_code}: {res.text}"
@@ -63,14 +54,14 @@ def run_tests() -> None:
     assert "createdAt" in case_created
     print("[PASS] Test 2: POST /api/v1/cases (Creation with camelCase DTO)")
 
-    # Test 2b: Duplicate Case ID Conflict (409)
+    # Test 2b: Exact retry is idempotent; changed payload still conflicts
     res = client.post("/api/v1/cases", json=create_case_payload)
-    assert res.status_code == 409, f"Expected 409 for duplicate caseId, got {res.status_code}"
-    print("[PASS] Test 2b: POST /api/v1/cases (Duplicate ID prevention -> 409)")
+    assert res.status_code == 201, f"Expected idempotent success for identical caseId, got {res.status_code}"
+    print("[PASS] Test 2b: POST /api/v1/cases (Identical submission retry -> same case)")
 
     # Test 3: Authorized Case Access
     access_payload = {
-        "caseAccessTokenHash": "546WDnBX9BKWBTACognIt9gyp0kvdqU2CW/boA0lldc=",
+        "caseAccessTokenHash": token,
     }
     res = client.post(f"/api/v1/cases/{test_case_id}/access", json=access_payload)
     assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.text}"
@@ -78,7 +69,7 @@ def run_tests() -> None:
     assert case_access["caseId"] == test_case_id
     assert case_access["status"] == "OPEN"
     assert case_access["messages"] == []
-    print("[PASS] Test 3: POST /api/v1/cases/{case_id}/access (Valid Access Token Hash)")
+    print("[PASS] Test 3: POST /api/v1/cases/{case_id}/access (Valid one-time reporter signature)")
 
     # Test 3b: Authorized UUID-less Case Lookup via 12-word Token Hash
     res = client.post("/api/v1/cases/lookup", json=access_payload)
@@ -86,21 +77,21 @@ def run_tests() -> None:
     case_lookup = res.json()
     assert case_lookup["caseId"] == test_case_id
     assert case_lookup["status"] == "OPEN"
-    print("[PASS] Test 3b: POST /api/v1/cases/lookup (UUID-less Access via Token Hash)")
+    print("[PASS] Test 3b: POST /api/v1/cases/lookup (UUID-less lookup with proof of possession)")
 
     # Test 3c: Lookup with non-existent token hash (404)
-    res = client.post("/api/v1/cases/lookup", json={"caseAccessTokenHash": "NON_EXISTENT_HASH_1234567890="})
+    res = client.post("/api/v1/cases/lookup", json={"caseAccessTokenHash": encoded(secrets.token_bytes(32))})
     assert res.status_code == 404, f"Expected 404, got {res.status_code}"
     print("[PASS] Test 3c: POST /api/v1/cases/lookup (Non-existent hash -> 404 Not Found)")
 
     # Test 4: Unauthorized Access (Wrong Token Hash -> 403 Forbidden)
     bad_access_payload = {
-        "caseAccessTokenHash": "WRONG_TOKEN_HASH_FOR_TESTING_ACCESS_DENIAL_123=",
+        "caseAccessTokenHash": encoded(secrets.token_bytes(32)),
     }
     res = client.post(f"/api/v1/cases/{test_case_id}/access", json=bad_access_payload)
-    assert res.status_code == 403, f"Expected 403, got {res.status_code}"
-    assert "Access Denied" in res.json()["detail"]
-    print("[PASS] Test 4: POST /api/v1/cases/{case_id}/access (Invalid Token Hash -> 403 Forbidden)")
+    assert res.status_code == 404, f"Expected 404, got {res.status_code}"
+    assert "No case found" in res.json()["detail"]
+    print("[PASS] Test 4: POST /api/v1/cases/{case_id}/access (Unknown recovery locator -> 404)")
 
     # Test 5: Investigator Listing Cases
     res = client.get("/api/v1/investigators/cases")
@@ -113,12 +104,7 @@ def run_tests() -> None:
     print("[PASS] Test 5: GET /api/v1/investigators/cases (Listing all cases)")
 
     # Test 6: Investigator Submitting Response
-    response_payload = {
-        "caseId": test_case_id,
-        "encryptedResponse": "vJnjmgeMZT+cgCghykVQ6fYQUA0/FDLysiTZpwU+47NN24oNoXBRtmFPOxeIehAlK0gV...",
-        "nonce": "adHsc6y0lsQSEgIwvLCf5di8ia6FQe0g",
-        "investigatorPublicKey": pubkey_data["publicKey"],
-    }
+    response_payload = signed_reply(fixture, test_case_id)
     res = client.post(
         f"/api/v1/investigators/cases/{test_case_id}/messages",
         json=response_payload,
@@ -151,9 +137,11 @@ def run_tests() -> None:
 
     # Test 9: SlowAPI Rate Limiting (15/min limit on lookup)
     ip_headers = {"X-Forwarded-For": "198.51.100.42"}
-    lookup_payload = {"caseAccessTokenHash": "546WDnBX9BKWBTACognIt9gyp0kvdqU2CW/boA0lldc="}
+    lookup_payload = {"caseAccessTokenHash": token}
 
-    # First request from this IP succeeds
+    from rate_limiter import limiter
+    limiter.reset()
+    # Forwarded headers do not change the trusted ASGI peer key.
     res = client.post("/api/v1/cases/lookup", json=lookup_payload, headers=ip_headers)
     assert res.status_code == 200
 
@@ -168,19 +156,15 @@ def run_tests() -> None:
     assert "Retry-After" in res_429.headers
     print("[PASS] Test 9: SlowAPI Rate Limiter (Throttles abuse -> 429 Too Many Requests with Retry-After)")
 
+    limiter.reset()
     # Test 10: Reporter Follow-up Message via URL ID (POST /api/v1/cases/{case_id}/messages)
-    reporter_reply_payload = {
-        "caseAccessTokenHash": "546WDnBX9BKWBTACognIt9gyp0kvdqU2CW/boA0lldc=",
-        "encryptedMessage": "reporter_reply_ciphertext_base64_example_payload...",
-        "nonce": "reporter_nonce_24_bytes_base64_example...",
-        "investigatorPublicKey": pubkey_data["publicKey"],
-    }
+    reporter_reply_payload = signed_reply(fixture, test_case_id, 'REPORTER')
 
     # 10a: Unauthorized reporter reply with wrong token hash
     bad_reply = dict(reporter_reply_payload)
-    bad_reply["caseAccessTokenHash"] = "WRONG_TOKEN_HASH="
+    bad_reply["caseAccessTokenHash"] = encoded(secrets.token_bytes(32))
     res = client.post(f"/api/v1/cases/{test_case_id}/messages", json=bad_reply)
-    assert res.status_code == 403, f"Expected 403, got {res.status_code}"
+    assert res.status_code == 404, f"Expected 404, got {res.status_code}"
 
     # 10b: Authorized reporter reply
     res = client.post(f"/api/v1/cases/{test_case_id}/messages", json=reporter_reply_payload)
@@ -192,12 +176,8 @@ def run_tests() -> None:
     print("[PASS] Test 10: Bidirectional dialog by case ID (POST /api/v1/cases/{case_id}/messages)")
 
     # Test 11: Direct Reporter Reply without UUID (POST /api/v1/cases/messages purely by token hash)
-    direct_reply_payload = {
-        "caseAccessTokenHash": "546WDnBX9BKWBTACognIt9gyp0kvdqU2CW/boA0lldc=",
-        "encryptedMessage": "second_reporter_reply_ciphertext_base64...",
-        "nonce": "second_nonce_24_bytes_base64...",
-        # investigatorPublicKey is optional; backend resolves it automatically
-    }
+    direct_reply_payload = signed_reply(fixture, test_case_id, 'REPORTER')
+    direct_reply_payload.pop('investigatorPublicKey')
     res = client.post("/api/v1/cases/messages", json=direct_reply_payload)
     assert res.status_code == 201, f"Expected 201, got {res.status_code}: {res.text}"
     rep_msg2 = res.json()
@@ -250,7 +230,7 @@ def run_tests() -> None:
     assert "198.51.100.99" not in test_msg_record.msg
     assert "203.0.113.12" not in test_msg_record.msg
     assert "[ANONYMIZED_IP]" in test_msg_record.msg
-    print("[PASS] Test 12: IP Logging Anonymizer (Guarantees zero client IP leakage in logs)")
+    print("[PASS] Test 12: IP Logging Anonymizer (Redacts the tested IPv4 access/message patterns; not an anonymity guarantee)")
 
     # Test 13: 4KB Constant-size Padding Invariant
     def simulate_iso_padding(data: bytes, block_size: int = 4096) -> bytes:
@@ -277,6 +257,11 @@ def run_tests() -> None:
     assert att_res["sizeBytes"] == len(blind_evidence_bytes)
     att_id = att_res["attachmentId"]
 
+    # Staging is private and must be finalized by the authorized signed reply.
+    assert client.get(f"/api/v1/cases/attachments/{att_id}").status_code == 403
+    finalized = client.post(f"/api/v1/investigators/cases/{test_case_id}/messages",
+        json=signed_reply(fixture, test_case_id, attachmentIds=[att_id]))
+    assert finalized.status_code == 201
     # Test 14b: Download Blind Evidence with Anti-XSS and Octet-Stream Headers
     res = client.get(f"/api/v1/cases/attachments/{att_id}")
     assert res.status_code == 200, f"Expected 200, got {res.status_code}"
@@ -287,11 +272,11 @@ def run_tests() -> None:
     print("[PASS] Test 14: Zero-Knowledge Evidence Upload & Anti-XSS Download")
 
     # Test 14c: Strict 10MB Attachment File Limit (Rejection of oversized blobs)
-    oversized_bytes = b"0" * (10 * 1024 * 1024 + 1)
+    oversized_bytes = b"0" * (10 * 1024 * 1024 + 17)
     files_oversized = {"file": ("oversized.enc", oversized_bytes, "application/octet-stream")}
-    res = client.post("/api/v1/cases/attachments", files=files_oversized)
+    res = client.post("/api/v1/cases/attachments", files=files_oversized, data={"staging_token": token})
     assert res.status_code == 413, f"Expected 413 Request Entity Too Large, got {res.status_code}"
-    print("[PASS] Test 14c: Strict 10MB Attachment Size Limit Enforced (413 Payload Too Large)")
+    print("[PASS] Test 14c: Ciphertext limit includes the MAC; one extra byte rejected (413)")
 
     # Test 14d: Path Traversal / Invalid UUID Rejection
     res = client.get("/api/v1/cases/attachments/invalid-attachment-uuid-1234")
@@ -318,11 +303,11 @@ def run_tests() -> None:
 
     # Test 15b: Detection of Retroactive Database Tampering
     from database import SessionLocal
-    from models import CaseAuditLog
+    from models import CaseHistoryEvent
 
     db = SessionLocal()
     try:
-        logs = db.query(CaseAuditLog).filter_by(case_id=test_case_id).all()
+        logs = db.query(CaseHistoryEvent).filter_by(case_id=test_case_id).all()
         assert len(logs) > 0
         # Attacker tampers with the first event payload
         tampered_entry_id = logs[0].id
@@ -345,6 +330,9 @@ def run_tests() -> None:
 
 
 if __name__ == "__main__":
-    run_tests()
+    with isolated_api() as fixture:
+        assert login(fixture).status_code == 200
+        fixture.client.headers.update(WRITE_HEADERS)
+        run_tests(fixture.reporter, fixture)
 
 

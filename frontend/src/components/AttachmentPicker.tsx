@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { File, Paperclip, X } from "lucide-react";
-import { ATTACHMENT_BUCKET_SIZES } from "@/lib/crypto";
+import { validateFiles } from "@/lib/attachments";
 import { Notice } from "./ui";
 
 interface AttachmentPickerProps {
@@ -21,32 +21,21 @@ export function AttachmentPicker({
 
   function formatBytes(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
   }
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     if (!e.target.files) return;
     const selected = Array.from(e.target.files);
-    const valid: File[] = [];
-    const rejected: string[] = [];
-
-    for (const file of selected) {
-      if (
-        file.size >= ATTACHMENT_BUCKET_SIZES[ATTACHMENT_BUCKET_SIZES.length - 1]
-      ) {
-        rejected.push(file.name);
-        continue;
-      }
-      valid.push(file);
+    try {
+      const combined = [...files, ...selected];
+      validateFiles(combined);
+      onChange(combined);
+      setError(null);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Cannot add attachments.');
     }
-
-    onChange([...files, ...valid]);
-    setError(
-      rejected.length
-        ? `Each file must be smaller than 10 MB. Not added: ${rejected.join(", ")}.`
-        : null,
-    );
     if (inputRef.current) {
       inputRef.current.value = "";
     }
@@ -79,7 +68,7 @@ export function AttachmentPicker({
           <span>Attach files</span>
         </button>
 
-        <span className="attachment-limit">Under 10 MB per file</span>
+        <span className="attachment-limit">Under 10 MiB each | 10 files maximum</span>
       </div>
       {error && (
         <div className="attachment-error">

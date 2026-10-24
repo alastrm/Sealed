@@ -1,177 +1,88 @@
-/**
- * ============================================================================
- * E2E Integration Test: Real Client -> Real Python FastAPI Backend
- * ============================================================================
- * 
- * Prerequisites:
- *   1. Start Python backend:
- *      python -m uvicorn main:app --port 8000
- * 
- *   2. Run this script in another terminal:
- *      npx ts-node e2e.ts
- * ============================================================================
- */
+/** Live v2 regression. Use a disposable API: this creates a report. No demo defaults. */
+import assert from 'node:assert/strict';
+import { createInvestigatorProof } from './frontend/src/lib/investigatorAuth';
+import { generateReporterBundle, deriveReporterSecrets, wipeMemory } from './frontend/src/lib/crypto';
+import { createReportManifest, unlockIdentity, decryptVerifiedReport, readThread, signMessage, verifyManifest } from './frontend/src/lib/protocol';
+import type { CaseMessageDto, IdentityPacket } from './frontend/src/lib/types';
+import { requestDigest, signReporterChallenge } from './frontend/src/lib/reporterAuth';
 
-import assert from 'node:assert';
-import {
-  InvestigatorService,
-  ReporterService,
-  InvestigatorAccountRecord,
-} from './poc';
-import sodium from 'libsodium-wrappers-sumo';
-
-const API_BASE = 'http://127.0.0.1:8000';
-
-async function main(): Promise<void> {
-  await sodium.ready;
-
-  console.log('==================================================================');
-  console.log('E2EE Whistleblower System: Live Client -> FastAPI Backend E2E Test');
-  console.log('==================================================================\n');
-
-  // Step 0: Check if backend is alive
+async function main() {
+  const base = process.env.SEALED_E2E_API_URL || 'http://127.0.0.1:8000';
+  const origin = process.env.SEALED_E2E_ORIGIN || 'http://localhost:3000';
+  const username = process.env.SEALED_E2E_USERNAME;
+  const accessKey = process.env.SEALED_E2E_ACCESS_KEY;
+  const password = process.env.SEALED_E2E_MASTER_PASSWORD;
+  const pin = process.env.SEALED_E2E_PIN;
+  assert(username && accessKey && password && pin, 'Set explicit username/access key/master password/trusted SEALED_E2E_PIN for a disposable API.');
+  // Explicit test configuration, never obtained from the response being verified.
+  process.env.NEXT_PUBLIC_INVESTIGATOR_SIGNING_KEYS = pin;
+  const headers = { Origin: origin, 'X-Sealed-Request': '1', 'Content-Type': 'application/json' };
+  const challengeRes = await fetch(`${base}/api/v1/investigators/auth/challenge`, { method: 'POST', headers, body: JSON.stringify({ username }) });
+  assert.equal(challengeRes.status, 200);
+  const challenge = await challengeRes.json();
+  const proof = await createInvestigatorProof(accessKey, challenge.challengeId, challenge.nonce, username, origin);
+  const login = await fetch(`${base}/api/v1/investigators/auth/session`, { method: 'POST', headers,
+    body: JSON.stringify({ username, challengeId: challenge.challengeId, proof }) });
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie')?.split(';')[0];
+  assert(cookie);
+  const authenticated = { ...headers, Cookie: cookie };
+  const reporter = await generateReporterBundle();
+  let identity: Awaited<ReturnType<typeof unlockIdentity>> | undefined;
   try {
-    const healthRes = await fetch(`${API_BASE}/health`);
-    if (!healthRes.ok) {
-      throw new Error(`Health check failed: ${healthRes.statusText}`);
-    }
-    const health = await healthRes.json();
-    console.log(`[OK] Connected to Python backend: ${JSON.stringify(health)}`);
-  } catch (err) {
-    console.error(
-      '\n[ERROR] Could not connect to Python FastAPI backend at ' + API_BASE + '.\n' +
-      'Please start the server first by running in a separate terminal:\n' +
-      '  python -m uvicorn main:app --port 8000\n'
-    );
-    process.exit(1);
+    const publicResponse = await fetch(`${base}/api/v1/investigators/public-key`);
+    assert.equal(publicResponse.status, 200);
+    const publicIdentity = await publicResponse.json();
+    const manifest = await createReportManifest('Disposable v2 live report', publicIdentity, reporter.secrets);
+    const submitted = await fetch(`${base}/api/v1/cases`, { method: 'POST', headers,
+      body: JSON.stringify({ protocolVersion: 2, manifest, caseId: manifest.caseId,
+        reporterPublicKey: reporter.secrets.publicKeyBase64, caseAccessTokenHash: reporter.secrets.caseAccessTokenHashBase64,
+        encryptedReport: manifest.encryptedReport }) });
+    assert.equal(submitted.status, 201);
+    assert.equal((await fetch(`${base}/api/v1/investigators/cases`)).status, 401);
+    const packets: IdentityPacket[] = await (await fetch(`${base}/api/v1/investigators/identities`, { headers: authenticated })).json();
+    identity = await unlockIdentity(packets.find((packet) => packet.signingPublicKey === pin)!, password);
+    assert.equal(await decryptVerifiedReport(manifest, identity.privateKey), 'Disposable v2 live report');
+    const reply = await signMessage(manifest, 'INVESTIGATOR', 'Verified investigator reply', identity.privateKey, identity.signingPrivateKey);
+    const threadUrl = `${base}/api/v1/investigators/cases/${manifest.caseId}/messages`;
+    const replyResponse = await fetch(threadUrl, { method: 'POST', headers: authenticated, body: JSON.stringify(reply) });
+    assert.equal(replyResponse.status, 201);
+    assert.equal((await fetch(threadUrl, { method: 'POST', headers: authenticated, body: JSON.stringify(reply) })).status, 409);
+    const recovered = await deriveReporterSecrets(reporter.mnemonic);
+    try {
+      const reporterPost = async (path: string, value: unknown) => {
+        const body = JSON.stringify(value);
+        const digest = await requestDigest(new TextEncoder().encode(body));
+        const operation = 'POST ' + path;
+        const response = await fetch(`${base}/api/v1/reporter-auth/challenge`, { method: 'POST', headers,
+          body: JSON.stringify({ authVersion: 1, locator: recovered.caseAccessTokenHashBase64,
+            signingPublicKey: recovered.signingPublicKeyBase64, operation, requestDigest: digest }) });
+        assert.equal(response.status, 200);
+        const challenge = await response.json();
+        const proof = await signReporterChallenge(challenge, recovered, { operation, requestDigest: digest, caseId: manifest.caseId });
+        return fetch(base + path, { method: 'POST', body, headers: { ...headers,
+          'X-Sealed-Challenge': challenge.challengeId, 'X-Sealed-Proof': proof } });
+      };
+      const trackResponse = await reporterPost('/api/v1/cases/lookup', { caseAccessTokenHash: recovered.caseAccessTokenHashBase64 });
+      assert.equal(trackResponse.status, 200);
+      const track = await trackResponse.json();
+      await verifyManifest(track.manifest, recovered);
+      const messages = await readThread(track.messages, manifest, 2, 'REPORTER', recovered.privateKey);
+      assert.equal(messages[0].authentication, 'verified');
+      assert.equal(messages[0].decryptedText, 'Verified investigator reply');
+      const followup = await signMessage(manifest, 'REPORTER', 'Verified reporter follow-up', recovered.privateKey, recovered.signingPrivateKey);
+      const followupResponse = await reporterPost('/api/v1/cases/messages', { ...followup,
+        encryptedMessage: followup.encryptedResponse, caseAccessTokenHash: recovered.caseAccessTokenHashBase64 });
+      assert.equal(followupResponse.status, 201);
+      const thread: CaseMessageDto[] = await (await fetch(threadUrl, { headers: authenticated })).json();
+      const read = await readThread(thread, manifest, 2, 'INVESTIGATOR', identity.privateKey);
+      assert.equal(read[1].authentication, 'verified');
+      assert.equal(read[1].decryptedText, 'Verified reporter follow-up');
+    } finally { wipeMemory(recovered.privateKey, recovered.signingPrivateKey); }
+    console.log('PASS: v2 submission, pinned identities, local unlock, signed replies both ways, recovery, replay denial, API authorization.');
+  } finally {
+    wipeMemory(identity?.privateKey, identity?.signingPrivateKey, reporter.secrets.privateKey, reporter.secrets.signingPrivateKey);
+    assert.equal((await fetch(`${base}/api/v1/investigators/auth/session`, { method: 'DELETE', headers: authenticated })).status, 204);
   }
-
-  // Step 1: Reporter fetches investigator's public key from backend
-  console.log('\n--- STEP 1: Reporter fetches Investigator Public Key ---');
-  const pubKeyRes = await fetch(`${API_BASE}/api/v1/investigators/public-key`);
-  assert.strictEqual(pubKeyRes.status, 200, 'Failed to fetch investigator public key');
-  const { publicKey: investigatorPublicKey } = await pubKeyRes.json();
-  console.log(`[OK] Fetched Public Key: ${investigatorPublicKey}`);
-
-  // Step 2: Reporter generates 12-word mnemonic and seals the report
-  console.log('\n--- STEP 2: Reporter creates and seals confidential report ---');
-  const mnemonic = ReporterService.generateMnemonic();
-  console.log(`[OK] Generated 12-word Mnemonic: "${mnemonic}"`);
-
-  const secrets = ReporterService.deriveSecretsFromMnemonic(mnemonic);
-  const secretReport =
-    'LIVE TEST REPORT: Unauthorized financial transfers detected in Eastern division. ' +
-    'Funds routed to unverified vendor account.';
-
-  const createCaseDto = ReporterService.createCase(
-    secretReport,
-    investigatorPublicKey,
-    secrets
-  );
-
-  // Step 3: Reporter POSTs case to Python backend
-  console.log('\n--- STEP 3: Submitting case to backend (POST /api/v1/cases) ---');
-  const postCaseRes = await fetch(`${API_BASE}/api/v1/cases`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(createCaseDto),
-  });
-  assert.strictEqual(postCaseRes.status, 201, 'Case creation failed');
-  const caseCreated = await postCaseRes.json();
-  console.log(`[OK] Case created on server with ID: ${caseCreated.caseId} (Status: ${caseCreated.status})`);
-
-  // Step 4: Investigator logs in, downloads case, and decrypts sealed report
-  console.log('\n--- STEP 4: Investigator reads and decrypts case ---');
-  const investigatorPassword = 'Correct-Horse-Battery-Staple-2026!#';
-  const accountRes = await fetch(`${API_BASE}/api/v1/investigators/account`);
-  assert.strictEqual(accountRes.status, 200, 'Failed to fetch investigator account');
-  const investigatorAccount: InvestigatorAccountRecord = await accountRes.json();
-
-  const unlockedPrivateKey = InvestigatorService.loginAndUnlockPrivateKey(
-    investigatorAccount,
-    investigatorPassword
-  );
-  console.log('[OK] Investigator password verified and private key unlocked in memory.');
-
-  // Fetch all cases from backend
-  const casesRes = await fetch(`${API_BASE}/api/v1/investigators/cases`);
-  assert.strictEqual(casesRes.status, 200, 'Failed to list investigator cases');
-  const casesList = await casesRes.json();
-  const currentCase = casesList.find((c: any) => c.id === caseCreated.caseId);
-  assert(currentCase, 'Created case not found in investigator list');
-
-  const decryptedReport = InvestigatorService.decryptAnonymousReport(
-    currentCase.encryptedReport,
-    investigatorAccount.publicKey,
-    unlockedPrivateKey
-  );
-  assert.strictEqual(decryptedReport, secretReport, 'Decrypted report does not match original');
-  console.log(`[OK] Investigator successfully decrypted report:\n     "${decryptedReport}"`);
-
-  // Step 5: Investigator drafts encrypted response and sends to backend
-  console.log('\n--- STEP 5: Investigator replies to reporter ---');
-  const responseText =
-    'OFFICIAL LIVE RESPONSE: Audit team deployed. Transaction logs are being preserved. ' +
-    'Please maintain secure custody of your 12-word mnemonic phrase.';
-
-  const responseDto = InvestigatorService.createResponse(
-    caseCreated.caseId,
-    responseText,
-    currentCase.reporterPublicKey,
-    investigatorAccount.publicKey,
-    unlockedPrivateKey
-  );
-
-  const sendMsgRes = await fetch(
-    `${API_BASE}/api/v1/investigators/cases/${caseCreated.caseId}/messages`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(responseDto),
-    }
-  );
-  assert.strictEqual(sendMsgRes.status, 201, 'Failed to post investigator response');
-  const createdMsg = await sendMsgRes.json();
-  console.log(`[OK] Investigator reply stored in backend (Message ID: ${createdMsg.id})`);
-
-  // Step 6: Reporter returns, inputs mnemonic, queries backend and decrypts reply
-  console.log('\n--- STEP 6: Reporter returns with mnemonic and decrypts reply ---');
-  const rederived = ReporterService.deriveSecretsFromMnemonic(mnemonic);
-  const tokenHashBase64 = sodium.to_base64(rederived.caseAccessTokenHash, sodium.base64_variants.ORIGINAL);
-
-  const accessRes = await fetch(`${API_BASE}/api/v1/cases/${caseCreated.caseId}/access`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ caseAccessTokenHash: tokenHashBase64 }),
-  });
-  assert.strictEqual(accessRes.status, 200, 'Reporter access denied');
-  const threadData = await accessRes.json();
-  assert.strictEqual(threadData.status, 'RESPONDED');
-  assert.strictEqual(threadData.messages.length, 1);
-
-  const decryptedResponse = ReporterService.decryptResponse(
-    threadData.messages[0],
-    rederived.keyPair.privateKey
-  );
-  assert.strictEqual(decryptedResponse, responseText, 'Decrypted response mismatch');
-  console.log(`[OK] Reporter successfully decrypted investigator reply:\n     "${decryptedResponse}"`);
-
-  // Step 7: Test access denial with incorrect mnemonic / token hash
-  console.log('\n--- STEP 7: Security check - Verify access denial on wrong hash ---');
-  const badAccessRes = await fetch(`${API_BASE}/api/v1/cases/${caseCreated.caseId}/access`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ caseAccessTokenHash: 'INVALID_HASH_SIMULATING_WRONG_MNEMONIC====' }),
-  });
-  assert.strictEqual(badAccessRes.status, 403, 'Server should reject invalid token hash with 403');
-  console.log('[OK] Server returned 403 Forbidden on invalid token hash as expected.');
-
-  console.log('\n==================================================================');
-  console.log('ALL LIVE INTEGRATION CHECKS PASSED: END-TO-END CRYPTO & API VERIFIED!');
-  console.log('==================================================================');
 }
-
-main().catch((err) => {
-  console.error('E2E Execution Error:', err);
-  process.exit(1);
-});
+main().catch(() => { console.error('Live v2 regression failed (no secret payloads logged).'); process.exitCode = 1; });

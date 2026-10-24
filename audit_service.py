@@ -1,7 +1,8 @@
 """
-Cryptographic Tamper-Evident Audit Chain Service (BLAKE2b).
-Implements a tamper-evident hash chain linking all case lifecycle mutations.
-Guarantees non-repudiation and immediate detection of database modifications.
+Historical pre-M4 chain reader retained for old data/tools.
+This format checks only internal hash links, not application data or complete
+history. Active routes use history_service.py. Never present this as authenticity,
+non-repudiation, or protection against database rewriting.
 """
 
 from datetime import datetime, timezone
@@ -19,7 +20,7 @@ GENESIS_HASH = "0" * 64
 
 def compute_blake2b(data: str | bytes | dict[str, Any]) -> str:
     """
-    Computes a 256-bit BLAKE2b digest for string, bytes, or JSON-serializable dictionary.
+    Historical 512-bit BLAKE2b digest (128 hex chars); do not use for new rows.
     """
     if isinstance(data, dict):
         raw_bytes = json.dumps(data, sort_keys=True).encode("utf-8")

@@ -1,7 +1,8 @@
 import enum
+import json
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import DateTime, Enum as SQLEnum, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, Enum as SQLEnum, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database import Base
@@ -56,6 +57,13 @@ class Case(Base):
     """
     __tablename__ = "cases"
 
+    protocol_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    manifest_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    @property
+    def manifest(self) -> dict | None:
+        return json.loads(self.manifest_json) if self.manifest_json else None
+
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
@@ -102,6 +110,9 @@ class CaseMessage(Base):
     """
     __tablename__ = "case_messages"
 
+    protocol_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    signature: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
@@ -132,6 +143,17 @@ class CaseMessage(Base):
     @sender.setter
     def sender(self, val: str) -> None:
         self.sender_type = val
+
+
+class InvestigatorIdentity(Base):
+    """Browser-created v2 identity. Only password-encrypted private material is stored."""
+    __tablename__ = "investigator_identities"
+    signing_public_key: Mapped[str] = mapped_column(String(44), primary_key=True)
+    investigator_id: Mapped[str] = mapped_column(ForeignKey("investigators.id"), nullable=False)
+    public_key: Mapped[str] = mapped_column(String(44), nullable=False)
+    identity_signature: Mapped[str] = mapped_column(String(88), nullable=False)
+    encrypted_bundle: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
 
 
 class CaseAttachment(Base):
@@ -165,7 +187,7 @@ class CaseAttachment(Base):
 class CaseAuditLog(Base):
     """
     Tamper-evident audit log entry in a cryptographic hash-chain.
-    Guarantees non-repudiation and detects retroactive database tampering.
+    Historical pre-M4 format. Retained unchanged; not evidence of data integrity.
     """
     __tablename__ = "case_audit_logs"
 
@@ -198,3 +220,47 @@ class CaseAuditLog(Base):
     )
 
     case: Mapped["Case"] = relationship("Case", back_populates="audit_logs")
+
+
+class SubmissionReceipt(Base):
+    """Idempotency for immutable v2 submission bodies; no plaintext credentials."""
+    __tablename__ = "submission_receipts"
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.id"), primary_key=True)
+    request_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    credential_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+
+
+class AttachmentUpload(Base):
+    """Managed staging leases. Legacy attachment rows are intentionally unmanaged."""
+    __tablename__ = "attachment_uploads"
+    id: Mapped[str] = mapped_column(ForeignKey("case_attachments.id"), primary_key=True)
+    owner_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    intended_case_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(16), nullable=False, default="staged")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CaseHistoryHead(Base):
+    """M4 consistency checkpoint, stored on the SAME trusted server as the data."""
+    __tablename__ = 'case_history_heads'
+    case_id: Mapped[str] = mapped_column(ForeignKey('cases.id'), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    current_hash: Mapped[str] = mapped_column(String(64), nullable=False, default='0' * 64)
+
+
+class CaseHistoryEvent(Base):
+    __tablename__ = 'case_history_events'
+    __table_args__ = (UniqueConstraint('case_id', 'sequence', name='uq_history_case_sequence'),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey('cases.id'), nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    current_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    request_id: Mapped[str | None] = mapped_column(String(36), unique=True, nullable=True)
+    request_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)

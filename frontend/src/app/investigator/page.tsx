@@ -30,8 +30,12 @@ export default function InvestigatorPortalPage() {
   const {
     username,
     setUsername,
+    legacyMode,
+    setLegacyMode,
     password,
     setPassword,
+    accessKey,
+    setAccessKey,
     isUnlocking,
     loginError,
     account,
@@ -47,6 +51,10 @@ export default function InvestigatorPortalPage() {
     isLoadingThread,
     isSendingReply,
     replySuccess,
+    replyPending,
+    changeStatus,
+    isChangingStatus,
+    statusPending,
     actionError,
     auditVerification,
     isVerifyingAudit,
@@ -62,6 +70,8 @@ export default function InvestigatorPortalPage() {
 
   async function handleLogin(event: React.FormEvent) {
     event.preventDefault();
+    setReplyText("");
+    setReplyFiles([]);
     await login();
   }
 
@@ -99,7 +109,7 @@ export default function InvestigatorPortalPage() {
               type="button"
               className="btn"
               onClick={loadCases}
-              disabled={isLoadingCases}
+              disabled={isLoadingCases || isSendingReply || replyPending || isChangingStatus || statusPending}
             >
               <RefreshCw size={14} className={isLoadingCases ? "spin" : ""} />
               Refresh
@@ -153,7 +163,7 @@ export default function InvestigatorPortalPage() {
                     className={`case-row ${item.id === selectedCaseId ? "selected" : ""}`}
                     aria-pressed={item.id === selectedCaseId}
                     onClick={() => handleSelectCase(item)}
-                    disabled={isDecryptingReport || isSendingReply}
+                    disabled={isDecryptingReport || isSendingReply || replyPending || isChangingStatus || statusPending}
                   >
                     <span className="case-row-top">
                       <FileText size={14} />
@@ -191,6 +201,22 @@ export default function InvestigatorPortalPage() {
               <>
                 <header className="case-detail-header">
                   <StatusBadge status={selectedCase.status} />
+                  {selectedCase.protocolVersion === 2 && (!selectedCase.readOnly || selectedCase.status === 'CLOSED') && (
+                    <div className="heading-actions">
+                      {statusPending ? (
+                        <button className="btn btn-small" disabled={isChangingStatus} onClick={() => changeStatus(selectedCase.status)}>Retry status change</button>
+                      ) : <>
+                        {selectedCase.status !== 'IN_REVIEW' && (
+                          <button className="btn btn-small" disabled={isChangingStatus || isSendingReply || replyPending || isLoadingThread}
+                            onClick={() => changeStatus('IN_REVIEW')}>{selectedCase.status === 'CLOSED' ? 'Reopen case' : 'Start review'}</button>
+                        )}
+                        {selectedCase.status !== 'CLOSED' && (
+                          <button className="btn btn-small" disabled={isChangingStatus || isSendingReply || replyPending || isLoadingThread}
+                            onClick={() => changeStatus('CLOSED')}>Close case</button>
+                        )}
+                      </>}
+                    </div>
+                  )}
                   <h2>Report {selectedCase.id.slice(0, 8).toUpperCase()}</h2>
                   <p className="case-id mono">{selectedCase.id}</p>
                   <div className="conversation-meta">
@@ -201,6 +227,9 @@ export default function InvestigatorPortalPage() {
                     />
                   </div>
                 </header>
+                {(selectedCase.protocolVersion !== 2 || selectedCase.readOnly) && (
+                  <Notice>{selectedCase.protocolVersion === 1 ? 'UNVERIFIED legacy conversation — READ-ONLY. Sender labels cannot be authenticated.' : selectedCase.status === 'CLOSED' ? 'Case closed. Reopen it to resume replies and uploads.' : 'Archived identity — READ-ONLY.'}</Notice>
+                )}
                 <div className="report-content">
                   <h3 className="case-section-heading">
                     <span>Original report</span>
@@ -246,6 +275,7 @@ export default function InvestigatorPortalPage() {
                   </EmptyState>
                 )}
                 <ReplyComposer
+                  pending={replyPending}
                   id="investigatorReply"
                   text={replyText}
                   onTextChange={setReplyText}
@@ -253,7 +283,7 @@ export default function InvestigatorPortalPage() {
                   onFilesChange={setReplyFiles}
                   onSubmit={handleSendReply}
                   isSending={isSendingReply}
-                  disabled={isLoadingThread}
+                  disabled={isChangingStatus || statusPending || isLoadingThread || selectedCase.readOnly || selectedCase.protocolVersion !== 2 || !decryptedReportText}
                   error={actionError}
                   success={replySuccess}
                   label="Reply to reporter"
@@ -306,6 +336,27 @@ export default function InvestigatorPortalPage() {
             />
           </div>
           <div>
+            <label htmlFor="access-key" className="field-label">
+              Workspace access key
+            </label>
+            <input
+              id="access-key"
+              type="password"
+              className="input"
+              value={accessKey}
+              onChange={(event) => setAccessKey(event.target.value)}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              disabled={isUnlocking}
+              required
+              aria-describedby="access-key-hint"
+            />
+            <p id="access-key-hint" className="field-description">
+              Generated by local access setup. Authenticates access to the API.
+            </p>
+          </div>
+          <div>
             <label htmlFor="password" className="field-label">
               Master password
             </label>
@@ -324,16 +375,20 @@ export default function InvestigatorPortalPage() {
               Used to unlock your investigator key in this browser.
             </p>
           </div>
+          <label className="field-description">
+            <input type="checkbox" checked={legacyMode} onChange={(event) => setLegacyMode(event.target.checked)} disabled={isUnlocking} />
+            {" "}Open legacy archive (original password; unverified and read-only)
+          </label>
           {loginError && <Notice>{loginError}</Notice>}
           <button
             type="submit"
             className="btn btn-primary btn-full"
-            disabled={isUnlocking || !password.trim() || !username.trim()}
+            disabled={isUnlocking || !password || !username.trim() || !accessKey.trim()}
           >
             {isUnlocking ? (
               <>
                 <Loader2 size={14} className="spin" />
-                Unlocking key…
+                Signing in and unlocking…
               </>
             ) : (
               <>
@@ -347,7 +402,7 @@ export default function InvestigatorPortalPage() {
           <LockKeyhole size={13} />
           <span>
             Your password unlocks your key locally. Reports are decrypted in
-            your browser.
+            your browser. <a href="/investigator/setup">Local identity setup</a>
           </span>
         </div>
       </section>

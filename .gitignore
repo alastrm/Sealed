@@ -15,6 +15,9 @@ ENV/
 *.db
 *.sqlite
 *.sqlite3
+*.db-wal
+*.db-shm
+*.db-journal
 whistleblower.db
 
 # Node.js dependencies & builds
@@ -33,6 +36,7 @@ dist/
 
 # Environment and Secrets
 .env
+.env.*
 .env*.local
 *.pem
 *.key
@@ -58,4 +62,5 @@ CLAUDE.md
 # Storage and attachments
 storage/
 *.enc
+sealed-identity-v2*.json
 

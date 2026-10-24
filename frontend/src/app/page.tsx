@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { SubmissionFlow, optionalStorage, MNEMONIC_KEY } from "@/lib/submission";
 import { useRouter } from "next/navigation";
 import {
   ArrowRight,
@@ -12,14 +13,6 @@ import {
   Loader2,
   LockKeyhole,
 } from "lucide-react";
-import { api } from "@/lib/api";
-import {
-  encryptAttachmentFile,
-  encryptReport,
-  generateReporterBundle,
-  packMessagePayload,
-} from "@/lib/crypto";
-import type { AttachmentMetadata } from "@/lib/types";
 import { AttachmentPicker } from "@/components/AttachmentPicker";
 import {
   Notice,
@@ -32,76 +25,27 @@ export default function ReporterHomePage() {
   const router = useRouter();
   const [reportText, setReportText] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [progress, setProgress] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [createdMnemonic, setCreatedMnemonic] = useState<string | null>(null);
+  const [flow] = useState(() => new SubmissionFlow());
+  const state = useSyncExternalStore(flow.subscribe, flow.snapshot, flow.serverSnapshot);
+  useEffect(() => { void flow.restore(); }, [flow]);
+  const isSubmitting = ['preparing', 'uploading', 'sending'].includes(state.phase);
+  const progress = state.phase === 'preparing' ? 'Preparing encryption...'
+    : state.phase === 'uploading' ? 'Uploading encrypted attachments...' : 'Sending encrypted report...';
+  const error = state.error;
+  const createdMnemonic = state.pending?.mnemonic || null;
+  const [savedKey, setSavedKey] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!state.pending || state.phase === 'success') return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [state.pending, state.phase]);
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (!reportText.trim() || isSubmitting) return;
-    setIsSubmitting(true);
-    setError(null);
-    setProgress("Preparing encryption…");
-
-    try {
-      const pubKeyData = await api.getInvestigatorPublicKey();
-      const { mnemonic, secrets } = await generateReporterBundle();
-      const attachmentsMeta: AttachmentMetadata[] = [];
-      const attachmentIds: string[] = [];
-
-      for (const file of selectedFiles) {
-        setProgress(
-          `Encrypting attachment ${attachmentsMeta.length + 1} of ${selectedFiles.length}…`,
-        );
-        const fileBuffer = await file.arrayBuffer();
-        const fileBytes = new Uint8Array(fileBuffer);
-        const encrypted = await encryptAttachmentFile(
-          fileBytes,
-          file.name,
-          file.type,
-        );
-        setProgress(
-          `Uploading encrypted attachment ${attachmentsMeta.length + 1} of ${selectedFiles.length}…`,
-        );
-        const uploadRes = await api.uploadAttachment(encrypted.fileBlob);
-        encrypted.metadata.attachmentId = uploadRes.attachmentId;
-        attachmentsMeta.push(encrypted.metadata);
-        attachmentIds.push(uploadRes.attachmentId);
-      }
-
-      setProgress("Encrypting your report…");
-      const packedPayload = packMessagePayload(
-        reportText.trim(),
-        attachmentsMeta,
-      );
-      const encryptedReport = await encryptReport(
-        packedPayload,
-        pubKeyData.publicKey,
-      );
-      setProgress("Sending encrypted report…");
-      await api.createCase({
-        caseId: crypto.randomUUID(),
-        reporterPublicKey: secrets.publicKeyBase64,
-        caseAccessTokenHash: secrets.caseAccessTokenHashBase64,
-        encryptedReport,
-        attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
-      });
-
-      sessionStorage.setItem("sealed_mnemonic", mnemonic);
-      setCreatedMnemonic(mnemonic);
-      setReportText("");
-      setSelectedFiles([]);
-    } catch (err: unknown) {
-      console.error(err);
-      const message = err instanceof Error ? err.message : "Unknown error";
-      setError(message || "Failed to submit report. Please try again.");
-    } finally {
-      setIsSubmitting(false);
-      setProgress("");
-    }
+    if (reportText.trim()) await flow.prepare(reportText, selectedFiles);
   }
 
   async function handleCopyMnemonic() {
@@ -120,7 +64,7 @@ export default function ReporterHomePage() {
 
   function handleGoToTrack() {
     if (createdMnemonic)
-      sessionStorage.setItem("sealed_mnemonic", createdMnemonic);
+      optionalStorage(storage => storage.setItem(MNEMONIC_KEY, createdMnemonic));
     router.push("/track");
   }
 
@@ -128,7 +72,7 @@ export default function ReporterHomePage() {
     return (
       <PageLayout aside={<ReportingGuide mode="track" />}>
         <div className="success-heading" role="status">
-          <CheckCircle2 size={16} /> Report submitted successfully
+          <CheckCircle2 size={16} /> {state.phase === 'success' ? 'Report submitted successfully' : 'Report prepared  -  save your access key before sending'}
         </div>
         <PageHeading
           label="Your next step"
@@ -143,6 +87,9 @@ export default function ReporterHomePage() {
             <span className="panel-meta">12 words</span>
           </div>
           <div className="panel-body">
+            {!state.storageAvailable && <Notice variant="info">Tab storage is unavailable. Save these words yourself. If you leave this page, use Track to check your report before starting another.</Notice>}
+            {error && <Notice>{error}</Notice>}
+            {isSubmitting && <p role="status">{progress}</p>}
             <Notice variant="info">
               Keep this key private. Anyone with these words can access your
               conversation.
@@ -163,6 +110,7 @@ export default function ReporterHomePage() {
                 <p className="mono field-description">{createdMnemonic}</p>
               </div>
             )}
+            {state.phase !== 'success' && <label className="field-description"><input type="checkbox" checked={savedKey} onChange={e => setSavedKey(e.target.checked)} disabled={isSubmitting} /> I have saved these 12 words in order.</label>}
             <div className="form-actions success-actions">
               <button
                 type="button"
@@ -172,14 +120,12 @@ export default function ReporterHomePage() {
                 {copied ? <Check size={14} /> : <Copy size={14} />}
                 {copied ? "Copied to clipboard" : "Copy access key"}
               </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleGoToTrack}
-              >
-                Open conversation
-                <ArrowRight size={14} />
-              </button>
+              {['ready', 'failed'].includes(state.phase) && <button type="button" className="btn" disabled={isSubmitting} onClick={() => { flow.editDraft(); setSavedKey(false); }}>Edit draft</button>}
+              {state.phase === 'success' ? <button type="button" className="btn btn-primary" onClick={handleGoToTrack}>
+                Open conversation <ArrowRight size={14} />
+              </button> : <button type="button" className="btn btn-primary" disabled={isSubmitting || !savedKey} onClick={() => { void flow.send(); }}>
+                {isSubmitting ? 'Working...' : state.phase === 'ready' ? 'Send encrypted report' : 'Check / retry same report'} <ArrowRight size={14} />
+              </button>}
             </div>
           </div>
         </section>

@@ -10,11 +10,13 @@ import { Notice } from "./ui";
 interface AttachmentListProps {
   attachments: AttachmentMetadata[];
   title?: string;
+  downloadAttachment?: (id: string) => Promise<ArrayBuffer>;
 }
 
 export function AttachmentList({
   attachments,
   title = "Attachments",
+  downloadAttachment = api.downloadAttachment,
 }: AttachmentListProps) {
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [downloadError, setDownloadError] = useState<string | null>(null);
@@ -25,8 +27,8 @@ export function AttachmentList({
 
   function formatBytes(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
   }
 
   async function handleDownload(att: AttachmentMetadata) {
@@ -34,8 +36,11 @@ export function AttachmentList({
     setDownloadError(null);
 
     try {
-      const rawBuffer = await api.downloadAttachment(att.attachmentId);
+      const rawBuffer = await downloadAttachment(att.attachmentId);
       const ciphertextBytes = new Uint8Array(rawBuffer);
+      if (att.bucketSize && ciphertextBytes.length !== att.bucketSize + 16) {
+        throw new Error('Attachment is incomplete or has an unexpected size.');
+      }
 
       const decryptedBytes = await decryptAttachmentFile(
         ciphertextBytes,
@@ -44,7 +49,10 @@ export function AttachmentList({
         att.bucketSize,
       );
 
-      triggerSafeDownload(decryptedBytes, att.originalName, att.mimeType);
+      try {
+        if (decryptedBytes.length !== att.sizeBytes) throw new Error('Decrypted attachment size does not match its metadata.');
+        triggerSafeDownload(decryptedBytes, att.originalName, att.mimeType);
+      } finally { decryptedBytes.fill(0); }
     } catch (err: unknown) {
       console.error(err);
       const msg = err instanceof Error ? err.message : "Failed to decrypt file";

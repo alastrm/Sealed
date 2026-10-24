@@ -10,3 +10,8 @@ whistleblower.db
 .next
 dist
 .env*.local
+.env
+.env.*
+storage/
+scratch/
+sealed-identity-v2*.json

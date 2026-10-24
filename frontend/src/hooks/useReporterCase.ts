@@ -1,14 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from '@/lib/api';
+import { api, ApiError } from '@/lib/api';
+import { prepareReply, deliverReply, type PendingReply } from '@/lib/replyDelivery';
+import type { InvestigatorResponseDto } from '@/lib/types';
+import { readThread, signMessage, verifyManifest } from '@/lib/protocol';
 import {
-  decryptInvestigatorResponse,
   deriveReporterSecrets,
-  encryptAttachmentFile,
-  encryptReporterReply,
-  packMessagePayload,
-  parseMessageContent,
   wipeMemory,
   type ReporterSecrets,
 } from '@/lib/crypto';
@@ -36,6 +34,7 @@ export function useReporterCase() {
     return '';
   });
 
+  const generation = useRef(0);
   const [fromSession, setFromSession] = useState(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -67,15 +66,22 @@ export function useReporterCase() {
   // Reply state
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [replyError, setReplyError] = useState<string | null>(null);
+  const pendingReply = useRef<PendingReply<InvestigatorResponseDto> | null>(null);
+  const replyBusy = useRef(false);
+  const [replyPending, setReplyPending] = useState(false);
+  const lookupAbort = useRef<AbortController | null>(null);
 
   // Auto wipe memory on unmount
   useEffect(() => {
     return () => {
+      generation.current += 1;
+      lookupAbort.current?.abort();
       const sec = activeSecretsRef.current;
       if (sec) {
         wipeMemory(
           sec.publicKey,
           sec.privateKey,
+          sec.signingPrivateKey,
           sec.caseAccessToken,
           sec.caseAccessTokenHash
         );
@@ -84,18 +90,24 @@ export function useReporterCase() {
   }, []);
 
   const fetchAuditVerification = useCallback(async (caseId: string) => {
+    const operation = generation.current;
     setIsVerifyingAudit(true);
+    setAuditVerification(null);
     try {
-      const res = await api.verifyAuditChain(caseId);
-      setAuditVerification(res);
+      const res = await api.verifyAuditChain(caseId, activeSecretsRef.current || undefined);
+      if (operation === generation.current) setAuditVerification(res);
     } catch (err) {
       console.error('Failed to verify audit chain:', err);
     } finally {
-      setIsVerifyingAudit(false);
+      if (operation === generation.current) setIsVerifyingAudit(false);
     }
   }, []);
 
   const clearSession = useCallback(() => {
+    generation.current += 1;
+    lookupAbort.current?.abort();
+    pendingReply.current = null;
+    setReplyPending(false);
     try {
       sessionStorage.removeItem('sealed_mnemonic');
     } catch {
@@ -106,11 +118,13 @@ export function useReporterCase() {
       wipeMemory(
         activeSecrets.publicKey,
         activeSecrets.privateKey,
+        activeSecrets.signingPrivateKey,
         activeSecrets.caseAccessToken,
         activeSecrets.caseAccessTokenHash
       );
     }
 
+    activeSecretsRef.current = null;
     setMnemonicInput('');
     setFromSession(false);
     setCaseData(null);
@@ -119,6 +133,8 @@ export function useReporterCase() {
     setAuditVerification(null);
     setError(null);
     setReplyError(null);
+    setIsSendingReply(false);
+    setIsVerifying(false);
   }, [activeSecrets]);
 
   const lookupCase = useCallback(
@@ -126,47 +142,55 @@ export function useReporterCase() {
       const phrase = (phraseToLookup ?? mnemonicInput).trim();
       if (!phrase) return;
 
+      const operation = ++generation.current;
+      lookupAbort.current?.abort();
+      const controller = new AbortController();
+      lookupAbort.current = controller;
+      pendingReply.current = null;
+      setReplyPending(false);
+      setReplyError(null);
+      setIsSendingReply(false);
+      setIsVerifyingAudit(false);
+      if (activeSecretsRef.current) wipeMemory(activeSecretsRef.current.privateKey, activeSecretsRef.current.signingPrivateKey,
+        activeSecretsRef.current.caseAccessToken, activeSecretsRef.current.caseAccessTokenHash);
+      activeSecretsRef.current = null;
+      setActiveSecrets(null);
+      setCaseData(null);
+      setDecryptedMessages([]);
+      setAuditVerification(null);
       setIsVerifying(true);
       setError(null);
 
+      let secrets: ReporterSecrets | null = null;
       try {
         // 1. Deterministically derive keys and token hash on client
-        const secrets = await deriveReporterSecrets(phrase);
-        setActiveSecrets(secrets);
+        secrets = await deriveReporterSecrets(phrase);
 
         // 2. Query blind backend purely by caseAccessTokenHash (NO UUID NEEDED)
-        const res = await api.lookupCase(secrets.caseAccessTokenHashBase64);
+        const res = await api.lookupCase(secrets.caseAccessTokenHashBase64, controller.signal, secrets);
+        if (res.protocolVersion === 2) {
+          if (!res.manifest || res.manifest.caseId !== res.caseId || res.reporterPublicKey !== secrets.publicKeyBase64) {
+            throw new Error('Case recovery identity mismatch.');
+          }
+          await verifyManifest(res.manifest, secrets);
+        } else if (res.protocolVersion !== 1 || res.manifest) {
+          throw new Error('Unsupported or downgraded report protocol.');
+        }
+        const decrypted = await readThread(res.messages, res.manifest, res.protocolVersion, 'REPORTER', secrets.privateKey);
+        if (operation !== generation.current) {
+          wipeMemory(secrets.privateKey, secrets.signingPrivateKey);
+          return;
+        }
+        activeSecretsRef.current = secrets;
+        setActiveSecrets(secrets);
         setCaseData(res);
-
-        // Fetch and verify BLAKE2b audit chain
-        fetchAuditVerification(res.caseId);
-
-        // 3. Decrypt each message locally using reporter's derived private key and parse attachments
-        const decrypted = await Promise.all(
-          res.messages.map(async (msg) => {
-            try {
-              const rawText = await decryptInvestigatorResponse(msg, secrets.privateKey);
-              const parsed = parseMessageContent(rawText);
-              return {
-                ...msg,
-                decryptedText: parsed.text,
-                attachments: parsed.attachments,
-              };
-            } catch {
-              return {
-                ...msg,
-                decryptedText: '[Decryption failed: corrupted or not addressed to you]',
-                attachments: [],
-              };
-            }
-          })
-        );
-
         setDecryptedMessages(decrypted);
+        fetchAuditVerification(res.caseId);
       } catch (err: unknown) {
-        console.error(err);
+        if (secrets) wipeMemory(secrets.privateKey, secrets.signingPrivateKey);
+        if (operation !== generation.current) return;
         const errMsg = err instanceof Error ? err.message : '';
-        if (errMsg.includes('404') || errMsg.includes('не найдено')) {
+        if ((err instanceof ApiError && err.status === 404) || errMsg.includes('не найдено')) {
           setError('No case found for this phrase. Check the 12 words.');
         } else if (errMsg.includes('Invalid 12-word BIP-39')) {
           setError('Invalid 12-word BIP-39 phrase. Check your word spelling.');
@@ -174,7 +198,7 @@ export function useReporterCase() {
           setError(errMsg || 'Server request failed.');
         }
       } finally {
-        setIsVerifying(false);
+        if (operation === generation.current) setIsVerifying(false);
       }
     },
     [mnemonicInput, fetchAuditVerification]
@@ -182,68 +206,63 @@ export function useReporterCase() {
 
   const sendReply = useCallback(
     async (text: string, files: File[]) => {
-      if (!text.trim() || !caseData || !activeSecrets) return false;
+      if (replyBusy.current || !text.trim() || !caseData || !activeSecrets || caseData.readOnly ||
+          caseData.protocolVersion !== 2 || !caseData.manifest) return false;
+      const operation = generation.current;
 
+      replyBusy.current = true;
       setIsSendingReply(true);
       setReplyError(null);
 
       try {
-        const pubKeyData = await api.getInvestigatorPublicKey();
+        await verifyManifest(caseData.manifest, activeSecrets);
 
-        // 1. Encrypt and upload any attachments
-        const attachmentsMeta: AttachmentMetadata[] = [];
-        for (const file of files) {
-          const fileBuffer = await file.arrayBuffer();
-          const fileBytes = new Uint8Array(fileBuffer);
-          const encrypted = await encryptAttachmentFile(fileBytes, file.name, file.type);
-          const uploadRes = await api.uploadAttachment(
-            encrypted.fileBlob,
-            caseData.caseId,
-            activeSecrets.caseAccessTokenHashBase64
-          );
-          encrypted.metadata.attachmentId = uploadRes.attachmentId;
-          attachmentsMeta.push(encrypted.metadata);
+        if (!pendingReply.current) {
+          const prepared = await prepareReply(text.trim(), files, (payload) => signMessage(
+            caseData.manifest!, 'REPORTER', payload, activeSecrets.privateKey, activeSecrets.signingPrivateKey));
+          if (operation !== generation.current) return false;
+          pendingReply.current = prepared;
         }
-
-        // 2. Pack plaintext with Zero-Knowledge attachment metadata
-        const packedPayload = packMessagePayload(text.trim(), attachmentsMeta);
-
-        const { encryptedMessage, nonce } = await encryptReporterReply(
-          packedPayload,
-          pubKeyData.publicKey,
-          activeSecrets.privateKey
-        );
-
-        const newMsg = await api.sendReporterReply(
-          {
+        if (operation !== generation.current) return false;
+        setReplyPending(true);
+        const pending = pendingReply.current;
+        const reply = pending.dto;
+        const newMsg = await deliverReply(pending, { caseId: caseData.caseId,
+          credential: activeSecrets.caseAccessTokenHashBase64, reporter: activeSecrets }, (dto) => api.sendReporterReply({
+            protocolVersion: 2, messageId: dto.messageId, signature: dto.signature,
             caseAccessTokenHash: activeSecrets.caseAccessTokenHashBase64,
-            encryptedMessage,
-            nonce,
-            investigatorPublicKey: pubKeyData.publicKey,
-          },
-          caseData.caseId
-        );
-
-        setCaseData((prev) => (prev ? { ...prev, status: 'IN_REVIEW' } : prev));
+            encryptedMessage: dto.encryptedResponse, nonce: dto.nonce,
+            investigatorPublicKey: caseData.manifest!.investigatorPublicKey, attachmentIds: dto.attachmentIds,
+          }, caseData.caseId, activeSecrets), async () => (await api.accessCase(caseData.caseId, activeSecrets.caseAccessTokenHashBase64, activeSecrets)).messages);
+        const verified = await readThread([newMsg], caseData.manifest, 2, 'REPORTER', activeSecrets.privateKey);
+        if (verified[0].authentication !== 'verified' || newMsg.id !== reply.messageId) throw new Error('Server reply verification failed.');
+        if (operation !== generation.current) return false;
+        const refreshed = await api.accessCase(caseData.caseId, activeSecrets.caseAccessTokenHashBase64, activeSecrets);
+        if (operation !== generation.current) return false;
+        setCaseData(refreshed);
         setDecryptedMessages((prev) => [
           ...prev,
           {
-            ...newMsg,
+            ...verified[0],
             decryptedText: text.trim(),
-            attachments: attachmentsMeta,
+            attachments: verified[0].attachments,
           },
         ]);
 
         // Refresh audit chain verification after adding message
         fetchAuditVerification(caseData.caseId);
+        pendingReply.current = null;
+        setReplyPending(false);
         return true;
       } catch (err: unknown) {
-        console.error(err);
+        if (operation !== generation.current) return false;
+        if (err instanceof ApiError && err.status === 410) { pendingReply.current = null; setReplyPending(false); }
         const msg = err instanceof Error ? err.message : '';
         setReplyError(msg || 'Failed to send reply.');
         return false;
       } finally {
-        setIsSendingReply(false);
+        replyBusy.current = false;
+        if (operation === generation.current) setIsSendingReply(false);
       }
     },
     [caseData, activeSecrets, fetchAuditVerification]
@@ -258,11 +277,13 @@ export function useReporterCase() {
     error,
     caseData,
     activeSecrets,
+    downloadAttachment: (id: string) => api.downloadAttachment(id, activeSecrets || undefined, caseData?.caseId),
     decryptedMessages,
     auditVerification,
     isVerifyingAudit,
     isSendingReply,
     replyError,
+    replyPending,
     lookupCase,
     sendReply,
     clearSession,

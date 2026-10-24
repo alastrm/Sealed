@@ -24,6 +24,7 @@ if (typeof window !== 'undefined') {
 const KDF_CONTEXT = {
   MASTER_SEED: 'whistleblower:master_seed:v1',
   REPORTER_KEYPAIR: 'whistleblower:box_keypair:v1',
+  REPORTER_SIGNING: 'sealed:reporter_signing:v2',
   CASE_ACCESS_TOKEN: 'whistleblower:case_token:v1',
 } as const;
 
@@ -31,6 +32,8 @@ export interface ReporterSecrets {
   mnemonic: string;
   publicKey: Uint8Array;
   privateKey: Uint8Array;
+  signingPrivateKey: Uint8Array;
+  signingPublicKeyBase64: string;
   publicKeyBase64: string;
   caseAccessToken: Uint8Array;
   caseAccessTokenHash: Uint8Array;
@@ -74,7 +77,7 @@ export function fromBase64(base64Str: string): Uint8Array {
 export async function deriveReporterSecrets(mnemonic: string): Promise<ReporterSecrets> {
   const s = await initCrypto();
 
-  const cleanMnemonic = mnemonic.trim().toLowerCase();
+  const cleanMnemonic = mnemonic.trim().toLowerCase().split(/\s+/).join(' ');
   if (!bip39.validateMnemonic(cleanMnemonic)) {
     throw new Error('Invalid 12-word BIP-39 mnemonic phrase.');
   }
@@ -82,6 +85,7 @@ export async function deriveReporterSecrets(mnemonic: string): Promise<ReporterS
   let bip39Seed: Buffer | Uint8Array | null = null;
   let masterSeed: Uint8Array | null = null;
   let keypairSeed: Uint8Array | null = null;
+  let signingSeed: Uint8Array | null = null;
 
   try {
     // 1. Generate 512-bit BIP-39 seed
@@ -104,6 +108,9 @@ export async function deriveReporterSecrets(mnemonic: string): Promise<ReporterS
     );
     const keyPair = s.crypto_box_seed_keypair(keypairSeed, 'uint8array');
 
+    signingSeed = s.crypto_generichash(32, s.from_string(KDF_CONTEXT.REPORTER_SIGNING), masterSeed);
+    const signingPair = s.crypto_sign_seed_keypair(signingSeed);
+
     // 4. Derive 32-byte case_access_token (kept on client)
     const caseAccessToken = s.crypto_generichash(
       32,
@@ -124,6 +131,8 @@ export async function deriveReporterSecrets(mnemonic: string): Promise<ReporterS
       mnemonic: cleanMnemonic,
       publicKey: keyPair.publicKey,
       privateKey: keyPair.privateKey,
+      signingPrivateKey: signingPair.privateKey,
+      signingPublicKeyBase64: s.to_base64(signingPair.publicKey, s.base64_variants.ORIGINAL),
       publicKeyBase64: s.to_base64(keyPair.publicKey, s.base64_variants.ORIGINAL),
       caseAccessToken,
       caseAccessTokenHash,
@@ -133,6 +142,7 @@ export async function deriveReporterSecrets(mnemonic: string): Promise<ReporterS
     // Guarantees intermediate seed materials are wiped even if an exception occurs
     if (masterSeed) s.memzero(masterSeed);
     if (keypairSeed) s.memzero(keypairSeed);
+    if (signingSeed) s.memzero(signingSeed);
     if (bip39Seed) {
       s.memzero(bip39Seed);
     }
@@ -201,8 +211,10 @@ export async function encryptReport(
 }
 
 /**
- * Decrypts an authenticated investigator reply using reporter's private key.
- * Verifies authenticity and integrity via Poly1305 MAC, then strips 4KB padding.
+ * Low-level box decryption using reporter's private key.
+ * Its shared-key MAC does NOT establish sender identity or direction. V2 callers
+ * must verify the pinned case identity/signature in protocol.ts first. Legacy
+ * callers must explicitly label results unverified.
  */
 export async function decryptInvestigatorResponse(
   record: {
@@ -395,7 +407,8 @@ export async function encryptReporterReply(
 }
 
 /**
- * Decrypts a message from the case thread for the investigator.
+ * Low-level message decryption for the investigator; not proof of authorship.
+ * V2 callers verify the separate signature/context in protocol.ts first.
  * Uses crypto_box_open_easy with investigator's private key and reporter's public key.
  */
 export async function decryptCaseMessageForInvestigator(
@@ -643,24 +656,27 @@ export function parseMessageContent(rawText: string): {
   text: string;
   attachments: AttachmentMetadata[];
 } {
-  try {
-    const trimmed = (rawText || '').trim();
-    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-      const parsed = JSON.parse(trimmed);
-      if (
-        typeof parsed === 'object' &&
-        parsed !== null &&
-        ('text' in parsed || 'attachments' in parsed)
-      ) {
-        return {
-          text: typeof parsed.text === 'string' ? parsed.text : '',
-          attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
-        };
-      }
-    }
-  } catch {
-    // Plain text message
+  const trimmed = (rawText || '').trim();
+  let parsed: unknown;
+  try { parsed = JSON.parse(trimmed); } catch { return { text: rawText, attachments: [] }; }
+  if (!parsed || typeof parsed !== 'object' || (!('text' in parsed) && !('attachments' in parsed))) {
+    return { text: rawText, attachments: [] };
   }
-  return { text: rawText, attachments: [] };
+  const payload = parsed as { text?: unknown; attachments?: unknown };
+  const attachments = payload.attachments ?? [];
+  if (!Array.isArray(attachments)) throw new Error('Invalid encrypted attachment metadata.');
+  const ids = new Set<string>();
+  for (const item of attachments) {
+    if (!item || typeof item !== 'object' || typeof item.attachmentId !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(item.attachmentId) ||
+        ids.has(item.attachmentId) || typeof item.originalName !== 'string' || typeof item.mimeType !== 'string' ||
+        !Number.isSafeInteger(item.sizeBytes) || item.sizeBytes < 0 || item.sizeBytes >= 10 * 1024 * 1024 ||
+        typeof item.keyBase64 !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(item.keyBase64) ||
+        typeof item.nonceBase64 !== 'string' || !/^[A-Za-z0-9+/]{32}$/.test(item.nonceBase64) ||
+        (item.bucketSize !== undefined && !(ATTACHMENT_BUCKET_SIZES as readonly number[]).includes(item.bucketSize))) {
+      throw new Error('Invalid encrypted attachment metadata.');
+    }
+    ids.add(item.attachmentId);
+  }
+  return { text: typeof payload.text === 'string' ? payload.text : '', attachments };
 }
-

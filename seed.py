@@ -30,9 +30,6 @@ TEST_INVESTIGATOR = {
     "created_at": datetime(2026, 10, 4, 17, 58, 20, tzinfo=timezone.utc),
 }
 
-TEST_PASSWORD_HINT = "Correct-Horse-Battery-Staple-2026!#"
-
-
 def seed_database() -> None:
     print("==================================================================")
     print("E2EE Whistleblower System - Database Seeder")
@@ -65,7 +62,6 @@ def seed_database() -> None:
         print(f"ID:                   {investigator.id}")
         print(f"Username:             {investigator.username}")
         print(f"Public Key (Base64):  {investigator.public_key}")
-        print(f"Password for login:   {TEST_PASSWORD_HINT}")
         print(f"KDF Salt (Base64):    {investigator.kdf_salt}")
         print(f"KDF Ops/Mem Limits:   ops={investigator.kdf_ops_limit}, mem={investigator.kdf_mem_limit} bytes")
         print("==================================================================")

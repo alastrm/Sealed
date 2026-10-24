@@ -30,11 +30,13 @@ export default function TrackCasePage() {
     isVerifying,
     error,
     caseData,
+    downloadAttachment,
     decryptedMessages,
     auditVerification,
     isVerifyingAudit,
     isSendingReply,
     replyError,
+    replyPending,
     lookupCase,
     sendReply,
     clearSession,
@@ -49,6 +51,7 @@ export default function TrackCasePage() {
 
   async function handleLookup(event?: React.FormEvent) {
     event?.preventDefault();
+    setReplySuccess(false);
     await lookupCase();
   }
 
@@ -96,6 +99,7 @@ export default function TrackCasePage() {
               className="input key-input"
               value={mnemonicInput}
               onChange={(event) => {
+                handleClearSession();
                 setMnemonicInput(event.target.value);
                 setFromSession(false);
               }}
@@ -198,14 +202,18 @@ export default function TrackCasePage() {
                 </span>
               </div>
               {decryptedMessages.length ? (
-                <MessageThread messages={decryptedMessages} viewer="REPORTER" />
+                <MessageThread messages={decryptedMessages} viewer="REPORTER" downloadAttachment={downloadAttachment} />
               ) : (
                 <EmptyState title="No replies yet">
                   Your report is awaiting a response. Check back here for
                   updates, or add more information below.
                 </EmptyState>
               )}
-              <ReplyComposer
+              {(caseData.readOnly || caseData.protocolVersion !== 2) && (
+                <Notice>{caseData.status === 'CLOSED' ? 'Case closed. Replies and new attachments are disabled until an Investigator reopens it.' : caseData.protocolVersion === 1 ? 'UNVERIFIED legacy conversation — READ-ONLY.' : 'Archived identity — READ-ONLY.'}</Notice>
+              )}
+            <ReplyComposer
+              pending={replyPending}
                 id="reporterReply"
                 text={replyText}
                 onTextChange={(text) => {
@@ -216,6 +224,7 @@ export default function TrackCasePage() {
                 onFilesChange={setReplyFiles}
                 onSubmit={handleSendReply}
                 isSending={isSendingReply}
+                disabled={caseData.readOnly || caseData.protocolVersion !== 2}
                 error={replyError}
                 success={replySuccess}
               />

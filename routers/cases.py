@@ -1,14 +1,24 @@
 import os
+import hashlib
+from pathlib import Path
+import json
 import secrets
 import uuid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from starlette.concurrency import run_in_threadpool
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 
-from audit_service import record_audit_event, verify_case_audit_chain
+from history_service import append_history, verify_history, history_version, prepare_mutation, lock_case
+from reporter_auth import ReporterAuth, get_reporter_auth, find_case, authorize_json, authorize_read, upload_digest
 from database import get_db
-from models import AuditEventType, Case, CaseAttachment, CaseMessage, CaseStatus, Investigator
+from message_protocol import read_only, validate_creation, validate_reply
+from investigator_auth import InvestigatorAuth, get_auth_service, require_investigator
+from models import AuditEventType, Case, CaseAttachment, CaseMessage, CaseStatus, Investigator, AttachmentUpload, SubmissionReceipt
+from attachment_service import (MAX_CIPHERTEXT_BYTES, LEASE, now, owner_hash, attachment_ids, claim_attachments, upload_lock, checked_path)
+from message_protocol import b64, canonical_uuid
 from rate_limiter import LIMIT_CREATE_CASE, LIMIT_LOOKUP_CASE, limiter
 from schemas import (
     AuditVerificationResponse,
@@ -25,7 +35,7 @@ router = APIRouter(prefix="/api/v1/cases", tags=["Cases"])
 
 STORAGE_DIR = os.path.join(os.getcwd(), "storage", "attachments")
 os.makedirs(STORAGE_DIR, exist_ok=True)
-MAX_ATTACHMENT_SIZE = 10 * 1024 * 1024  # Strictly up to 10 MB
+MAX_ATTACHMENT_SIZE = MAX_CIPHERTEXT_BYTES  # Largest padded bucket plus secretbox MAC
 
 
 @router.post(
@@ -41,65 +51,49 @@ def create_case(
     payload: CreateCaseDto,
     db: Session = Depends(get_db),
 ) -> CaseCreatedResponse:
-    # Check if a case with this ID already exists
-    existing = db.get(Case, payload.case_id)
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Case with ID '{payload.case_id}' already exists.",
-        )
+    ids = attachment_ids(payload.attachment_ids)
+    digest = hashlib.sha256(json.dumps({**payload.model_dump(), 'attachment_ids': sorted(ids)},
+        sort_keys=True, separators=(',', ':')).encode()).hexdigest()
 
+    def repeated():
+        existing = db.get(Case, payload.case_id)
+        if existing is None:
+            return None
+        receipt = db.get(SubmissionReceipt, payload.case_id)
+        if receipt is None or not secrets.compare_digest(receipt.request_digest, digest):
+            raise HTTPException(409, 'Case ID is already used by a different submission.')
+        return CaseCreatedResponse(case_id=existing.id, status=existing.status, created_at=existing.created_at)
+
+    replay = repeated()
+    if replay is not None:
+        return replay
+    validate_creation(db, payload)
+    if db.scalar(select(Case.id).where(Case.case_access_token_hash == payload.case_access_token_hash)) is not None:
+        raise HTTPException(409, 'These recovery credentials already identify a report. Use Track.')
     try:
         case = Case(
-            id=payload.case_id,
+            id=payload.case_id, protocol_version=2, manifest_json=json.dumps(payload.manifest),
             case_access_token_hash=payload.case_access_token_hash,
             reporter_public_key=payload.reporter_public_key,
-            encrypted_report=payload.encrypted_report,
-            status=CaseStatus.OPEN,
+            encrypted_report=payload.encrypted_report, status=CaseStatus.OPEN,
         )
         db.add(case)
         db.flush()
-
-        # Record Genesis event in cryptographic audit chain
-        record_audit_event(
-            db=db,
-            case_id=case.id,
-            event_type=AuditEventType.CASE_CREATED,
-            payload_data={
-                "case_id": case.id,
-                "reporter_public_key": case.reporter_public_key,
-                "case_access_token_hash": case.case_access_token_hash,
-                "encrypted_report_hash": secrets.token_hex(16),
-            },
-        )
-
-        # Link any attachments submitted with this initial report
-        if payload.attachment_ids:
-            for att_id in payload.attachment_ids:
-                att = db.get(CaseAttachment, att_id)
-                if att:
-                    att.case_id = case.id
-                    record_audit_event(
-                        db=db,
-                        case_id=case.id,
-                        event_type=AuditEventType.ATTACHMENT_ADDED,
-                        payload_data={
-                            "attachment_id": att.id,
-                            "size_bytes": att.size_bytes,
-                        },
-                    )
-
+        claim_attachments(db, ids, case.id, owner_hash('reporter', payload.manifest['reporterSigningPublicKey'] + ':' + payload.case_access_token_hash), STORAGE_DIR, initial=True)
+        append_history(db, case, STORAGE_DIR, 'CASE_CREATED', 'REPORTER')
+        db.add(SubmissionReceipt(case_id=case.id, request_digest=digest,
+            credential_digest=hashlib.sha256(payload.case_access_token_hash.encode()).hexdigest()))
         db.commit()
-        db.refresh(case)
+    except IntegrityError:
+        db.rollback()
+        replay = repeated()
+        if replay is not None:
+            return replay
+        raise HTTPException(409, 'Concurrent submission conflict; retry the same submission.') from None
     except Exception:
         db.rollback()
         raise
-
-    return CaseCreatedResponse(
-        case_id=case.id,
-        status=case.status,
-        created_at=case.created_at,
-    )
+    return CaseCreatedResponse(case_id=case.id, status=case.status, created_at=case.created_at)
 
 
 @router.post(
@@ -107,72 +101,130 @@ def create_case(
     response_model=CaseAttachmentUploadResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Upload Blind Encrypted Evidence Attachment",
-    description="Stores an encrypted binary blob without metadata. File size strictly limited to 10MB.",
+    description="Stores an encrypted binary blob without metadata. Ciphertext is bounded to the largest padding bucket plus its authentication tag.",
 )
 @limiter.limit(LIMIT_LOOKUP_CASE)
 async def upload_attachment(
     request: Request,
     file: UploadFile = File(...),
     case_id: str | None = Form(None),
+    attachment_id: str | None = Form(None),
+    staging_token: str | None = Form(None),
     case_access_token_hash: str | None = Form(None),
+    signing_public_key: str | None = Form(None),
+    content_digest: str | None = Form(None),
+    reporter_auth: ReporterAuth = Depends(get_reporter_auth),
     db: Session = Depends(get_db),
+    auth: InvestigatorAuth = Depends(get_auth_service),
 ) -> CaseAttachmentUploadResponse:
-    content = await file.read()
-    if len(content) > MAX_ATTACHMENT_SIZE:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"Attachment size {len(content)} bytes exceeds maximum allowed limit of 10 MB.",
-        )
-
+    attachment_id = attachment_id or str(uuid.uuid4())
+    canonical_uuid(attachment_id)
     resolved_case_id = case_id
-    if not resolved_case_id and case_access_token_hash:
-        stmt = select(Case).where(Case.case_access_token_hash == case_access_token_hash)
-        found_case = db.execute(stmt).scalars().first()
-        if found_case:
+    if case_id:
+        canonical_uuid(case_id)
+    reporter_case = None
+    if case_access_token_hash or staging_token:
+        locator = case_access_token_hash or staging_token
+        b64(locator, 32)
+        b64(signing_public_key, 32)
+        found_case = db.scalar(select(Case).where(Case.case_access_token_hash == locator))
+        if case_access_token_hash and (not found_case or (case_id and found_case.id != case_id)):
+            raise HTTPException(403, 'Invalid attachment case credential.')
+        if case_access_token_hash:
             resolved_case_id = found_case.id
+        elif case_id:
+            raise HTTPException(400, 'Initial staging cannot specify an existing case.')
+        reporter_case = found_case
+        reporter_auth.consume(request, operation='POST /api/v1/cases/attachments',
+            request_digest=upload_digest(attachment_id, case_id, content_digest, staging_token, case_access_token_hash),
+            case=found_case, locator=locator, key=signing_public_key)
+        if found_case and signing_public_key != found_case.manifest['reporterSigningPublicKey']:
+            raise HTTPException(403, 'Wrong attachment signing identity.')
+        owner = owner_hash('reporter', signing_public_key + ':' + locator)
+    elif case_id:
+        investigator = require_investigator(request, db, auth)
+        if db.get(Case, case_id) is None:
+            raise HTTPException(404, 'Case not found.')
+        owner = owner_hash('investigator', investigator.id)
+    else:
+        raise HTTPException(401, 'Initial uploads require a reporter signing proof.')
 
-    attachment_id = str(uuid.uuid4())
-    file_path = os.path.join(STORAGE_DIR, f"{attachment_id}.enc")
-
+    root = Path(STORAGE_DIR).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    temporary = root / f'v3-{attachment_id}-{secrets.token_hex(8)}.part'
+    destination = root / f'v3-{attachment_id}.enc'
+    published = False
+    size = 0
+    digest = hashlib.sha256()
     try:
-        with open(file_path, "wb") as f:
-            f.write(content)
-
-        attachment = CaseAttachment(
-            id=attachment_id,
-            case_id=resolved_case_id,
-            ciphertext_path=file_path,
-            size_bytes=len(content),
-        )
-        db.add(attachment)
-
-        if resolved_case_id:
-            record_audit_event(
-                db=db,
-                case_id=resolved_case_id,
-                event_type=AuditEventType.ATTACHMENT_ADDED,
-                payload_data={
-                    "attachment_id": attachment_id,
-                    "size_bytes": len(content),
-                },
-            )
-
-        db.commit()
-        db.refresh(attachment)
-    except Exception:
+        with temporary.open('xb') as target:
+            while chunk := await file.read(256 * 1024):
+                size += len(chunk)
+                if size > MAX_ATTACHMENT_SIZE:
+                    raise HTTPException(413, 'Encrypted attachment exceeds 10 MiB plus its 16-byte MAC.')
+                digest.update(chunk)
+                target.write(chunk)
+        if size == 0:
+            raise HTTPException(400, 'Empty ciphertext upload.')
+        if signing_public_key and digest.hexdigest() != content_digest:
+            raise HTTPException(403, 'Uploaded bytes do not match the signed request.')
+        with upload_lock:
+            # Recheck after streaming and hold the DB lock only during publication.
+            # A concurrent close wins before publication or waits for this commit.
+            if resolved_case_id:
+                prepare_mutation(db, resolved_case_id, STORAGE_DIR)
+            elif reporter_case:
+                prepare_mutation(db, reporter_case.id, STORAGE_DIR)
+            lease = db.get(AttachmentUpload, attachment_id)
+            attachment = db.get(CaseAttachment, attachment_id)
+            if attachment is not None or lease is not None:
+                if (not attachment or not lease or lease.owner_hash != owner
+                    or lease.intended_case_id != resolved_case_id
+                    or lease.content_digest != digest.hexdigest() or attachment.size_bytes != size):
+                    raise HTTPException(409, 'Upload ID is already used by a different upload.')
+                if lease.state == 'expired':
+                    raise HTTPException(410, 'Upload expired; prepare a new upload.')
+                if lease.state == 'staged':
+                    changed = db.execute(update(AttachmentUpload).where(
+                        AttachmentUpload.id == attachment_id, AttachmentUpload.state == 'staged',
+                        AttachmentUpload.expires_at > now(),
+                    ).values(expires_at=now() + LEASE).execution_options(synchronize_session=False)).rowcount
+                    if changed != 1:
+                        raise HTTPException(410, 'Upload expired; prepare a new upload.')
+                destination = checked_path(STORAGE_DIR, attachment.ciphertext_path)
+                if not destination.exists():
+                    os.rename(temporary, destination)
+                db.commit()
+                return CaseAttachmentUploadResponse(attachment_id=attachment.id, size_bytes=size, created_at=attachment.created_at)
+            if destination.exists():
+                # A process crash may leave ciphertext without a receipt. Do not
+                # overwrite or adopt a blob whose owner can no longer be proven.
+                raise HTTPException(409, 'Unreconciled upload file; prepare a new upload ID.')
+            attachment = CaseAttachment(id=attachment_id, case_id=None,
+                ciphertext_path=str(destination), size_bytes=size)
+            db.add(attachment)
+            db.flush()
+            db.add(AttachmentUpload(id=attachment_id, owner_hash=owner,
+                intended_case_id=resolved_case_id, content_digest=digest.hexdigest(),
+                state='staged', expires_at=now() + LEASE))
+            os.rename(temporary, destination)
+            published = True
+            db.commit()
+            return CaseAttachmentUploadResponse(attachment_id=attachment.id, size_bytes=size, created_at=attachment.created_at)
+    except BaseException:
         db.rollback()
-        if os.path.exists(file_path):
-            try:
-                os.remove(file_path)
-            except OSError:
-                pass
+        if published:
+            # Delete only the file this request published, and only if no committed
+            # database record owns it (including an ambiguous commit outcome).
+            if db.get(CaseAttachment, attachment_id) is None and destination.exists():
+                destination.unlink()
         raise
-
-    return CaseAttachmentUploadResponse(
-        attachment_id=attachment.id,
-        size_bytes=attachment.size_bytes,
-        created_at=attachment.created_at,
-    )
+    finally:
+        try:
+            await file.close()
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
 
 @router.get(
@@ -182,7 +234,10 @@ async def upload_attachment(
 )
 def download_attachment(
     attachment_id: str,
+    request: Request,
     db: Session = Depends(get_db),
+    reporter_auth: ReporterAuth = Depends(get_reporter_auth),
+    auth: InvestigatorAuth = Depends(get_auth_service),
 ) -> FileResponse:
     # 1. Strict UUID validation
     try:
@@ -201,26 +256,16 @@ def download_attachment(
             detail=f"Attachment with ID '{valid_attachment_id}' was not found.",
         )
 
-    # 2. Strict canonical path containment (Path Traversal prevention)
-    resolved_storage_dir = os.path.abspath(STORAGE_DIR)
-    resolved_file_path = os.path.abspath(attachment.ciphertext_path)
-
-    try:
-        is_contained = os.path.commonpath([resolved_file_path, resolved_storage_dir]) == resolved_storage_dir
-    except ValueError:
-        is_contained = False
-
-    if not is_contained:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access Denied: Path traversal detected.",
-        )
-
-    if not os.path.isfile(resolved_file_path):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Attachment file not found on disk.",
-        )
+    if not attachment.case_id:
+        raise HTTPException(403, 'Staged attachments are not downloadable.')
+    case = db.get(Case, attachment.case_id)
+    if request.headers.get('x-sealed-challenge'):
+        authorize_read(request, case, reporter_auth)
+    else:
+        require_investigator(request, db, auth)
+    resolved_file_path = checked_path(STORAGE_DIR, attachment.ciphertext_path)
+    if not resolved_file_path.is_file():
+        raise HTTPException(404, 'Attachment file not found on disk.')
 
     return FileResponse(
         path=resolved_file_path,
@@ -233,253 +278,87 @@ def download_attachment(
     )
 
 
-@router.get(
-    "/{case_id}/audit-verify",
-    response_model=AuditVerificationResponse,
-    summary="Verify Tamper-Evident BLAKE2b Audit Chain",
-    description="Verifies the cryptographic integrity of the hash chain from Genesis to latest state.",
-)
-def verify_audit(
-    case_id: str,
-    db: Session = Depends(get_db),
-) -> AuditVerificationResponse:
+@router.get('/{case_id}/audit-verify', response_model=AuditVerificationResponse)
+def verify_audit(case_id: str, request: Request, db: Session = Depends(get_db),
+                 reporter_auth: ReporterAuth = Depends(get_reporter_auth),
+                 auth: InvestigatorAuth = Depends(get_auth_service)):
     case = db.get(Case, case_id)
     if not case:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Case with ID '{case_id}' was not found.",
-        )
-
-    result = verify_case_audit_chain(db, case_id)
-    return AuditVerificationResponse(
-        is_valid=result["is_valid"],
-        events_count=result["events_count"],
-        broken_at=result.get("broken_at"),
-        latest_hash=result.get("latest_hash"),
-        reason=result.get("reason"),
-    )
+        raise HTTPException(404, 'Case not found.')
+    if request.headers.get('x-sealed-challenge'):
+        authorize_read(request, case, reporter_auth)
+    else:
+        require_investigator(request, db, auth)
+    case = lock_case(db, case_id)  # one consistent SQL snapshot during verification
+    return AuditVerificationResponse(**verify_history(db, case, STORAGE_DIR))
 
 
-@router.post(
-    "/lookup",
-    response_model=CaseAccessResponseDto,
-    summary="Lookup Case by Access Token Hash (No UUID Required)",
-    description="Reporter queries case purely using their derived 12-word mnemonic token hash.",
-)
+def case_response(db, case):
+    return CaseAccessResponseDto(case_id=case.id, protocol_version=case.protocol_version, manifest=case.manifest,
+        read_only=read_only(db, case) or case.status == CaseStatus.CLOSED, status=case.status,
+        revision=history_version(db, case.id), created_at=case.created_at,
+        reporter_public_key=case.reporter_public_key, messages=[CaseMessageDto.model_validate(m) for m in case.messages])
+
+
+@router.post('/lookup', response_model=CaseAccessResponseDto)
 @limiter.limit(LIMIT_LOOKUP_CASE)
-def lookup_case(
-    request: Request,
-    payload: CaseAccessRequestDto,
-    db: Session = Depends(get_db),
-) -> CaseAccessResponseDto:
-    stmt = select(Case).where(Case.case_access_token_hash == payload.case_access_token_hash)
-    case = db.execute(stmt).scalars().first()
-    if not case:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Обращение с такой мнемонической фразой не найдено. Проверьте правильность введённых слов.",
-        )
-
-    # Constant-time comparison to ensure exact verification
-    if not secrets.compare_digest(payload.case_access_token_hash, case.case_access_token_hash):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access Denied: Invalid case access token hash.",
-        )
-
-    messages = [CaseMessageDto.model_validate(m) for m in case.messages]
-
-    return CaseAccessResponseDto(
-        case_id=case.id,
-        status=case.status,
-        created_at=case.created_at,
-        reporter_public_key=case.reporter_public_key,
-        messages=messages,
-    )
+async def lookup_case(request: Request, payload: CaseAccessRequestDto, db: Session = Depends(get_db),
+                      reporter_auth: ReporterAuth = Depends(get_reporter_auth)):
+    case = find_case(db, payload.case_access_token_hash)
+    await authorize_json(request, case, reporter_auth)
+    return case_response(db, case)
 
 
-@router.post(
-    "/messages",
-    response_model=CaseMessageDto,
-    status_code=status.HTTP_201_CREATED,
-    summary="Submit Reporter Follow-Up Reply (By Access Token Hash)",
-    description="Enables two-way encrypted dialogue. Reporter sends an authenticated follow-up message verified via caseAccessTokenHash.",
-)
-@limiter.limit(LIMIT_LOOKUP_CASE)
-def add_reporter_message_by_hash(
-    request: Request,
-    payload: ReporterReplyDto,
-    db: Session = Depends(get_db),
-) -> CaseMessageDto:
-    stmt = select(Case).where(Case.case_access_token_hash == payload.case_access_token_hash)
-    case = db.execute(stmt).scalars().first()
-    if not case:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Case not found for the provided access token hash.",
-        )
-
-    if not secrets.compare_digest(payload.case_access_token_hash, case.case_access_token_hash):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access Denied: Invalid case access token hash.",
-        )
-
-    inv_pub = payload.investigator_public_key
-    if not inv_pub:
-        inv = db.execute(select(Investigator)).scalars().first()
-        inv_pub = inv.public_key if inv else ""
-
+def persist_reporter_reply(db, case, payload):
+    case = prepare_mutation(db, case.id, STORAGE_DIR)
+    validate_reply(db, case, payload, 'REPORTER', payload.encrypted_message)
     try:
-        message = CaseMessage(
-            case_id=case.id,
-            encrypted_response=payload.encrypted_message,
-            nonce=payload.nonce,
-            investigator_public_key=inv_pub,
-            sender_type="REPORTER",
-        )
-        case.status = CaseStatus.IN_REVIEW
+        message = CaseMessage(id=payload.message_id, protocol_version=2, signature=payload.signature,
+            case_id=case.id, encrypted_response=payload.encrypted_message, nonce=payload.nonce,
+            investigator_public_key=case.manifest['investigatorPublicKey'], sender_type='REPORTER')
         db.add(message)
         db.flush()
-
-        record_audit_event(
-            db=db,
-            case_id=case.id,
-            event_type=AuditEventType.MESSAGE_RECEIVED,
-            payload_data={
-                "message_id": message.id,
-                "sender_type": "REPORTER",
-                "nonce": message.nonce,
-            },
-        )
-        record_audit_event(
-            db=db,
-            case_id=case.id,
-            event_type=AuditEventType.STATUS_CHANGED,
-            payload_data={
-                "new_status": CaseStatus.IN_REVIEW.value,
-            },
-        )
-
+        claim_attachments(db, payload.attachment_ids, case.id,
+            owner_hash('reporter', case.manifest['reporterSigningPublicKey'] + ':' + case.case_access_token_hash), STORAGE_DIR)
+        # Reporter messages never mutate investigator workflow status.
+        append_history(db, case, STORAGE_DIR, 'MESSAGE_RECEIVED', 'REPORTER')
         db.commit()
         db.refresh(message)
+        return CaseMessageDto.model_validate(message)
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409, 'Duplicate record ID rejected.') from None
     except Exception:
         db.rollback()
         raise
 
-    return CaseMessageDto.model_validate(message)
 
-
-@router.post(
-    "/{case_id}/access",
-    response_model=CaseAccessResponseDto,
-    summary="Access Case by ID and Access Token Hash",
-    description="Verifies the reporter's caseAccessTokenHash using constant-time comparison and returns messages thread.",
-)
+@router.post('/messages', response_model=CaseMessageDto, status_code=201)
 @limiter.limit(LIMIT_LOOKUP_CASE)
-def access_case(
-    request: Request,
-    case_id: str,
-    payload: CaseAccessRequestDto,
-    db: Session = Depends(get_db),
-) -> CaseAccessResponseDto:
-    case = db.get(Case, case_id)
-    if not case:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Case with ID '{case_id}' was not found.",
-        )
-
-    # Constant-time comparison to prevent timing attacks
-    is_authorized = secrets.compare_digest(
-        payload.case_access_token_hash,
-        case.case_access_token_hash,
-    )
-
-    if not is_authorized:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access Denied: Invalid case access token hash.",
-        )
-
-    messages = [CaseMessageDto.model_validate(m) for m in case.messages]
-
-    return CaseAccessResponseDto(
-        case_id=case.id,
-        status=case.status,
-        created_at=case.created_at,
-        reporter_public_key=case.reporter_public_key,
-        messages=messages,
-    )
+async def add_reporter_message_by_hash(request: Request, payload: ReporterReplyDto, db: Session = Depends(get_db),
+                                       reporter_auth: ReporterAuth = Depends(get_reporter_auth)):
+    case = find_case(db, payload.case_access_token_hash)
+    await authorize_json(request, case, reporter_auth)
+    return await run_in_threadpool(persist_reporter_reply, db, case, payload)
 
 
-@router.post(
-    "/{case_id}/messages",
-    response_model=CaseMessageDto,
-    status_code=status.HTTP_201_CREATED,
-    summary="Submit Reporter Follow-Up Reply by Case ID",
-    description="Enables two-way encrypted dialogue. Reporter sends an authenticated follow-up message to investigator.",
-)
+@router.post('/{case_id}/access', response_model=CaseAccessResponseDto)
 @limiter.limit(LIMIT_LOOKUP_CASE)
-def add_reporter_message(
-    request: Request,
-    case_id: str,
-    payload: ReporterReplyDto,
-    db: Session = Depends(get_db),
-) -> CaseMessageDto:
-    case = db.get(Case, case_id)
-    if not case:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Case with ID '{case_id}' was not found.",
-        )
+async def access_case(request: Request, case_id: str, payload: CaseAccessRequestDto, db: Session = Depends(get_db),
+                      reporter_auth: ReporterAuth = Depends(get_reporter_auth)):
+    case = find_case(db, payload.case_access_token_hash)
+    if case.id != case_id:
+        raise HTTPException(403, 'Recovery credentials belong to another case.')
+    await authorize_json(request, case, reporter_auth)
+    return case_response(db, case)
 
-    if not secrets.compare_digest(payload.case_access_token_hash, case.case_access_token_hash):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access Denied: Invalid case access token hash.",
-        )
 
-    inv_pub = payload.investigator_public_key
-    if not inv_pub:
-        inv = db.execute(select(Investigator)).scalars().first()
-        inv_pub = inv.public_key if inv else ""
-
-    try:
-        message = CaseMessage(
-            case_id=case.id,
-            encrypted_response=payload.encrypted_message,
-            nonce=payload.nonce,
-            investigator_public_key=inv_pub,
-            sender_type="REPORTER",
-        )
-        case.status = CaseStatus.IN_REVIEW
-        db.add(message)
-        db.flush()
-
-        record_audit_event(
-            db=db,
-            case_id=case.id,
-            event_type=AuditEventType.MESSAGE_RECEIVED,
-            payload_data={
-                "message_id": message.id,
-                "sender_type": "REPORTER",
-                "nonce": message.nonce,
-            },
-        )
-        record_audit_event(
-            db=db,
-            case_id=case.id,
-            event_type=AuditEventType.STATUS_CHANGED,
-            payload_data={
-                "new_status": CaseStatus.IN_REVIEW.value,
-            },
-        )
-
-        db.commit()
-        db.refresh(message)
-    except Exception:
-        db.rollback()
-        raise
-
-    return CaseMessageDto.model_validate(message)
+@router.post('/{case_id}/messages', response_model=CaseMessageDto, status_code=201)
+@limiter.limit(LIMIT_LOOKUP_CASE)
+async def add_reporter_message(request: Request, case_id: str, payload: ReporterReplyDto, db: Session = Depends(get_db),
+                               reporter_auth: ReporterAuth = Depends(get_reporter_auth)):
+    case = find_case(db, payload.case_access_token_hash)
+    if case.id != case_id:
+        raise HTTPException(403, 'Recovery credentials belong to another case.')
+    await authorize_json(request, case, reporter_auth)
+    return await run_in_threadpool(persist_reporter_reply, db, case, payload)

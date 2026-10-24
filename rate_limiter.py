@@ -11,14 +11,8 @@ from slowapi import Limiter
 def get_real_client_ip(request: Request) -> str:
     """
     Extracts client IP for in-memory rate limiting keys.
-    Checks X-Forwarded-For and X-Real-IP before falling back to request.client.host.
+    Use the ASGI peer. Caller-supplied proxy headers are not a trusted identity.
     """
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    real_ip = request.headers.get("X-Real-IP")
-    if real_ip:
-        return real_ip.strip()
     if request.client:
         return request.client.host
     return "127.0.0.1"

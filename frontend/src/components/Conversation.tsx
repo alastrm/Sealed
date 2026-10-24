@@ -15,18 +15,21 @@ import { Notice } from "./ui";
 export function MessageThread({
   messages,
   viewer,
+  downloadAttachment,
 }: {
   messages: CaseMessageDto[];
   viewer: "REPORTER" | "INVESTIGATOR";
+  downloadAttachment?: (id: string) => Promise<ArrayBuffer>;
 }) {
   return (
     <div className="message-list">
-      {messages.map((message) => {
+      {messages.map((message, index) => {
+        const verified = message.authentication === 'verified';
         const reporter = (message.senderType || message.sender) === "REPORTER";
-        const mine = (reporter ? "REPORTER" : "INVESTIGATOR") === viewer;
-        const Icon = reporter ? Fingerprint : ShieldCheck;
+        const mine = verified && (reporter ? "REPORTER" : "INVESTIGATOR") === viewer;
+        const Icon = !verified || reporter ? Fingerprint : ShieldCheck;
         return (
-          <article className="message" key={message.id}>
+          <article className="message" key={`${message.id}:${index}`}>
             <div className="message-heading">
               <div className="message-author">
                 <span
@@ -34,7 +37,7 @@ export function MessageThread({
                 >
                   <Icon size={13} />
                 </span>
-                {reporter ? "Reporter" : "Investigator"}
+                {verified ? (reporter ? "Reporter" : "Investigator") : message.authentication === "legacy" ? "UNVERIFIED legacy sender" : "UNVERIFIED sender"}
                 {mine && <span className="muted">You</span>}
               </div>
               <time dateTime={message.createdAt}>
@@ -48,7 +51,7 @@ export function MessageThread({
             </div>
             <p className="message-text">{message.decryptedText}</p>
             {message.attachments && (
-              <AttachmentList attachments={message.attachments} />
+              <AttachmentList attachments={message.attachments} downloadAttachment={downloadAttachment} />
             )}
           </article>
         );
@@ -66,6 +69,7 @@ interface ReplyComposerProps {
   onSubmit: (event: React.FormEvent) => void;
   isSending: boolean;
   disabled?: boolean;
+  pending?: boolean;
   error: string | null;
   success?: boolean;
   label?: string;
@@ -80,6 +84,7 @@ export function ReplyComposer({
   onSubmit,
   isSending,
   disabled = false,
+  pending = false,
   error,
   success,
   label = "Write a follow-up",
@@ -98,12 +103,12 @@ export function ReplyComposer({
         rows={4}
         placeholder="Add information to the conversation…"
         required
-        disabled={busy}
+        disabled={busy || pending}
       />
       <AttachmentPicker
         files={files}
         onChange={onFilesChange}
-        disabled={busy}
+        disabled={busy || pending}
       />
       <div className="stack-sm">
         {error && <Notice>{error}</Notice>}
@@ -126,7 +131,7 @@ export function ReplyComposer({
               </>
             ) : (
               <>
-                Send reply
+                {pending ? 'Check / retry same reply' : 'Send reply'}
                 <Send size={13} />
               </>
             )}

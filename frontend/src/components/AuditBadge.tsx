@@ -18,7 +18,7 @@ export function AuditBadge({
     return (
       <div className="audit-badge" role="status">
         <Loader2 size={13} className="spin" />
-        <span>Verifying audit chain...</span>
+        <span>Checking stored history...</span>
       </div>
     );
   }
@@ -27,12 +27,13 @@ export function AuditBadge({
     return null;
   }
 
-  if (!verification.isValid) {
+  if (verification.status !== 'consistent') {
     return (
-      <div className="audit-badge invalid" role="alert">
+      <div className={`audit-badge ${verification.status === 'inconsistent' ? 'invalid' : ''}`} role="status">
         <ShieldAlert size={14} />
         <span>
-          Audit integrity broken ({verification.reason || "tampered"})
+          {verification.status === 'inconsistent' ? 'History consistency check failed.' : verification.status === 'legacy' ? 'UNVERIFIED legacy history.' : 'History verification unavailable.'}
+          {verification.reason && ` ${verification.reason}`}
         </span>
         {onRefresh && (
           <button
@@ -48,11 +49,13 @@ export function AuditBadge({
   }
 
   return (
-    <div className="audit-badge" role="status">
+    <div className="audit-badge" role="status" title="The server checks stored data and signatures against its history. This does not prove complete history or protect against a server rewriting or rolling back all records.">
       <ShieldCheck size={13} />
       <span>
-        Audit chain verified · {verification.eventsCount}{" "}
+        Server consistency check passed · {verification.eventsCount}{" "}
         {verification.eventsCount === 1 ? "event" : "events"}
+        {verification.historicalBaseline ? ' · Earlier history unverified' : ''}
+        {' · Completeness not proven'}
       </span>
       {onRefresh && (
         <button
