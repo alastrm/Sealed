@@ -1,183 +1,147 @@
-# SEALED
+# Sealed
 
-A pet project demonstrating client-side WebAssembly cryptography with an untrusted, blind backend.
+A local portfolio application for encrypted reporting and two-way conversations. Reports and attachments are encrypted in the browser; v2 messages are signed by independently established participant identities. Backend authentication, content signatures and server history checks serve different purposes.
 
-- **Backend:** FastAPI (Python 3.12), SQLite / PostgreSQL, SlowAPI rate limiting
-- **Frontend:** Next.js 16 (React 19, TypeScript), Tailwind CSS, local system fonts
-- **Cryptography:** libsodium (`libsodium-wrappers-sumo` via WebAssembly), BIP-39
+[Demo guide](DEMO.md) · [Security model](MILESTONE_4_SECURITY_AUDIT.md) · [Verification report](MILESTONE_4_REPORT.md)
 
----
+**Current milestone: M4 — security, integrity and finalization.** The implementation and isolated verification are complete. Existing databases require the explicit additive M4 migration before activation.
 
-## Overview
+## Application
 
-SEALED is an anonymous drop prototype. The client encrypts all data in browser memory before transmission. The server acts solely as a blind relay: it stores ciphertexts, validates blinded access tokens, and cannot decrypt messages or inspect file metadata.
+### Submit a report
 
-1. **Anonymous Credentials:** The reporter receives a 12-word BIP-39 mnemonic. The client derives an X25519 keypair and a blinded access token hash using BLAKE2b with domain separation tags. No accounts, emails, or technical UUIDs are required from the reporter.
-2. **Anonymous Sealed Box:** The initial report is padded to a fixed 4 KB block size and encrypted with `crypto_box_seal` using the investigator's public key. The ephemeral keypair used during encryption is destroyed immediately afterward.
-3. **Bidirectional Dialogue:** Follow-up messages are exchanged using authenticated asymmetric encryption (`crypto_box_easy`), with constant 4 KB padding on each message.
-4. **Blind Attachments:** Files up to 10 MB are padded to discrete bucket boundaries (256 KB, 1 MB, 5 MB, 10 MB) and encrypted with a fresh symmetric key (`crypto_secretbox_easy`). The server stores raw ciphertext blobs without knowing filenames, MIME types, or keys. File metadata is sealed inside the encrypted message payload.
-5. **Tamper-Evident Audit Chain:** Mutations (case creation, messages, attachments, status changes) are recorded in an append-only BLAKE2b hash chain:
-   $$\text{hash}_n = \text{BLAKE2b}(\text{hash}_{n-1} \mathbin{\Vert} \text{event\_type} \mathbin{\Vert} \text{payload\_hash} \mathbin{\Vert} \text{timestamp})$$
-   Any retroactive database edit breaks chain continuity, which the client verifies against the genesis hash.
-6. **Investigator Key Storage:** The investigator's private key is stored on the server encrypted with Argon2id + XChaCha20-Poly1305. The master password never leaves the browser; decryption happens locally in tab memory.
+Prepare an encrypted report with supporting evidence, then save the recovery words before sending.
 
----
+![Sealed report submission](docs/screenshots/submit-report.png)
 
-## Threat Model & Security Analysis
+<details>
+<summary>Track a report</summary>
 
-This section outlines the security guarantees and explicit limitations of the architecture.
+Recover a conversation using the 12-word key and exchange authenticated encrypted replies.
 
-### What Is Protected (In-Scope Defenses)
+![Sealed report tracking](docs/screenshots/track-report.png)
 
-- **Compromised Database / Storage Dump:**  
-  If the database or server disk is seized or leaked, an attacker gains no access to report plaintexts, message history, file attachments, or attachment metadata (filenames, extensions, MIME types). All sensitive payloads are stored as ciphertexts.
-- **Credential Storage:**  
-  The server stores only `case_access_token_hash` (a BLAKE2b digest of the client-derived token). The server cannot reverse this hash to recover the reporter's 12-word mnemonic or private key.
-- **Traffic Analysis by Message Size:**  
-  Messages are padded to a uniform 4 KB boundary, and attachments are padded to discrete buckets (256 KB, 1 MB, 5 MB, 10 MB). A passive network eavesdropper cannot infer the exact length of messages or files by inspecting packet sizes.
-- **Database Record Tampering:**  
-  If an administrator or attacker modifies past messages or status fields directly in the database, the cryptographic BLAKE2b hash chain breaks, allowing both reporter and investigator clients to detect the tampering.
-- **In-Memory Key Wiping:**  
-  Sensitive cryptographic keys and intermediate buffers in WebAssembly memory are zeroed out via `sodium.memzero` within `finally` blocks upon completion or failure.
+</details>
 
-### What Is NOT Protected (Critical Limitations)
+<details>
+<summary>Investigator access</summary>
 
-Any realistic evaluation of browser-based end-to-end encryption must acknowledge its fundamental boundaries:
+Backend workspace authentication and local decryption-key unlocking are separate operations.
 
-1. **The JavaScript Delivery Problem (Primary Weakness of Web-Crypto):**  
-   The browser fetches application JavaScript from the server on each load. If the server, hosting provider, or CDN is compromised, an attacker can serve a malicious version of the JavaScript bundle that exfiltrates mnemonics or plaintexts before encryption occurs.  
-   *Production whistleblowing tools (e.g., SecureDrop) avoid browser-delivered code entirely, relying on Tor Onion services, strict sandbox environments, or signed native binaries.*
-2. **Network Metadata and IP Correlation:**  
-   While application-level logs strip client IP addresses, the transport and network layers (TCP/IP, reverse proxies, ISPs, cloud providers) still observe incoming connections. An observer monitoring network traffic can correlate the timing and volume of requests between a reporter and an investigator.  
-   *Without routing traffic through Tor Browser or a multi-hop VPN, network anonymity is not guaranteed.*
-3. **Public Key Distribution (Trust On First Use):**  
-   The client fetches the investigator's public key over HTTP/TLS (`GET /api/v1/investigators/public-key`). A compromised or malicious server could substitute this with an attacker's public key, enabling a man-in-the-middle attack on initial submissions. There is currently no out-of-band fingerprint verification mechanism.
-4. **Browser Runtime and Garbage Collection:**  
-   While WebAssembly buffers are zeroed using `sodium.memzero`, JavaScript strings (such as text entered in HTML form fields or stored in React state) are immutable and managed by the V8 garbage collector. They may persist in process memory until garbage collection runs, leaving them vulnerable to local memory inspection or rogue browser extensions.
-5. **Endpoint Security:**  
-   If the reporter's machine has malware, a keylogger, or malicious browser extensions installed, data can be captured prior to encryption or when the 12-word mnemonic is displayed on screen.
+![Sealed Investigator access](docs/screenshots/investigator-access.png)
 
----
+</details>
 
-## Cryptographic Primitives
+## Try the isolated demo
 
-| Purpose | Algorithm / Primitive | Library |
-| :--- | :--- | :--- |
-| Initial Report Encryption | `crypto_box_seal` (X25519, XSalsa20-Poly1305, ephemeral key) | libsodium |
-| Bidirectional Messages | `crypto_box_easy` (X25519 ECDH, XSalsa20-Poly1305) | libsodium |
-| File Attachment Encryption | `crypto_secretbox_easy` (XChaCha20-Poly1305, 32-byte key) | libsodium |
-| Mnemonic Generation | BIP-39 (128 bits entropy $\rightarrow$ 12 English words) | `@scure/bip39` |
-| Key & Token Derivation | BLAKE2b (`crypto_generichash` with domain tags) | libsodium |
-| Investigator Key KDF | Argon2id (`crypto_pwhash`, ops=2, mem=64MB) | libsodium |
-| Audit Hash Chain | BLAKE2b (`crypto_generichash`) | libsodium / Python `hashlib` |
-| Length Padding | `crypto_pad` / `crypto_unpad` (PKCS#7 equivalent) | libsodium |
+With Python and the root/frontend dependencies already installed:
 
----
-
-## Project Structure
-
-```
-Sealed/
-├── backend/ (root directory)
-│   ├── main.py              # FastAPI app, middleware, CORS
-│   ├── models.py            # SQLAlchemy 2.0 models (Investigator, Case, Message, Attachment, AuditLog)
-│   ├── schemas.py           # Pydantic v2 schemas
-│   ├── audit_service.py     # BLAKE2b audit hash chain implementation
-│   ├── rate_limiter.py      # SlowAPI rate limiting (5 req/min create, 15 req/min lookup)
-│   ├── logging_config.py    # IP stripping filter for stdout/stderr logs
-│   ├── seed.py              # Test database seeder
-│   ├── test_api.py          # Backend integration test suite (18 tests)
-│   └── routers/
-│       ├── cases.py         # Submission, lookup, attachments, audit endpoints
-│       └── investigators.py # Key exchange, cases listing, replies
-├── frontend/                # Next.js 16 App Router
-│   ├── src/
-│   │   ├── lib/
-│   │   │   ├── crypto.ts    # libsodium WASM, BIP-39, bucket padding, KDF
-│   │   │   ├── api.ts       # Backend API client
-│   │   │   └── types.ts     # DTO types
-│   │   ├── components/
-│   │   │   ├── AppShell.tsx            # Responsive navigation and application shell
-│   │   │   ├── ui.tsx                  # Shared surfaces, notices, status, and guidance
-│   │   │   ├── Conversation.tsx        # Message thread and reply composer
-│   │   │   ├── AuditBadge.tsx          # BLAKE2b audit chain status
-│   │   │   ├── AttachmentList.tsx      # In-memory decryption & download
-│   │   │   └── AttachmentPicker.tsx    # Evidence upload picker
-│   │   └── app/
-│   │       ├── layout.tsx              # Root metadata and shared application shell
-│   │       ├── page.tsx                # Report submission & 12-word mnemonic screen
-│   │       ├── track/page.tsx          # Case tracking & message thread
-│   │       └── investigator/page.tsx   # Investigator login & dashboard
-├── docker-compose.yml       # Docker Compose configuration
-└── Dockerfile               # Backend container
+```powershell
+npm run demo:e2e
 ```
 
----
+This generates fresh synthetic identities, a disposable SQLite database and loopback servers, exercises the actual frontend cryptography through Next's API proxy, and cleans up its own environment. It does not need your Investigator password or existing identity. See [DEMO.md](DEMO.md) for prerequisites, browser steps, expected output and migration instructions.
 
-## Quickstart
+## Implemented workflows
 
-### Docker Compose
+- **Submit:** prepare the report and display 12 recovery words before transmission. Save acknowledgement precedes sending. Stable signed request identities support retry/reconciliation after an ambiguous network result. Optional sessionStorage failure cannot turn confirmed success into failure.
+- **Track:** recover the reporter's encryption/signing identity from the words, prove possession for protected requests, verify the case manifest, and exchange signed encrypted replies. The original sealed report is readable by the Investigator; Reporter recovery restores conversation access.
+- **Investigator:** authenticate to the backend with a separate workspace access key, then locally unlock an encrypted private-key bundle with the master password. Read reports, reply, start review, close and reopen cases.
+- **Evidence:** encrypt files locally and retain filename, MIME type and keys inside the encrypted payload. Owned staging leases and transactional claims prevent cross-case reassignment; interrupted operations have explicit retry behavior.
+- **History:** check server-side consistency of signed content, attachment bytes, status and recorded events. The UI explicitly states **Completeness not proven**.
+- **Legacy:** v1 is available through the authenticated Investigator archive as **UNVERIFIED / READ-ONLY**. Legacy Reporter tracking returns 410 because it has no enrolled signing identity; there is no silent bearer-authentication fallback.
 
-```bash
-docker compose up --build
+Closing a case blocks new replies and uploads from both roles while preserving reads/downloads. Only Investigator can reopen it. Reporter replies do not change status. Revision checks and idempotent transition IDs handle conflicts and retries.
+
+## Architecture and trust
+
+| Layer | Implementation |
+|---|---|
+| Frontend | Next.js 16 / React 19 / TypeScript; local fonts and existing application shell |
+| API | FastAPI, SQLAlchemy, SQLite, Pydantic; local single-process operation |
+| Browser crypto | libsodium-wrappers-sumo and BIP-39 |
+| Investigator access | M1 challenge authentication; separate workspace access key; HttpOnly session cookie, origin/header CSRF checks |
+| Reporter access | M4 request-authentication v1: short-lived, single-use Ed25519 challenge proofs bound to case, request and identity |
+| Content authenticity | Message protocol v2; independent Ed25519 signing keys and explicit trusted Investigator pin |
+| History | Transactional event/head records, 32-byte BLAKE2b hashes, signed-data/file/status consistency checks |
+
+The server stores ciphertext, encrypted Investigator key bundles, public participant identities, recovery locators, case metadata and history. It can observe timing, sizes, relationships and status. The stored Reporter locator is **not** an authorization credential: possession of a database record alone cannot generate the required signature.
+
+The Investigator pin comes from trusted local setup, independently of API responses. The browser verifies the encryption-key certificate and signed case/message context. There is no TOFU or automatic participant replacement. Private signing/decryption keys remain in the browser during use; passwords and recovery words are not sent to the API.
+
+### Cryptographic primitives
+
+| Purpose | Primitive |
+|---|---|
+| Initial report confidentiality | X25519 / XSalsa20-Poly1305 sealed box (`crypto_box_seal`) |
+| Conversation confidentiality | `crypto_box_easy` |
+| Message and request signatures | Ed25519 detached signatures with explicit context/domain encoding |
+| Attachments | Fresh symmetric key and `crypto_secretbox_easy` |
+| Recovery | 12-word BIP-39; existing domain-separated BLAKE2b derivation |
+| Investigator private bundle | Argon2id and `crypto_secretbox_easy` |
+| Request body digests | SHA-256 |
+| Server consistency history | BLAKE2b, 32 bytes / 64 hexadecimal characters |
+
+Message padding uses 4 KiB boundaries, not a constant size for every message. Files use discrete buckets. Padding conceals exact plaintext length within a bucket but still exposes the bucket, timing and traffic volume.
+
+## Security boundaries
+
+Sealed does **not** guarantee complete anonymity or protection against a malicious server delivering modified JavaScript. Browser extensions, endpoint compromise, weak master passwords and recovery-word disclosure can defeat confidentiality. Best-effort buffer wiping does not erase immutable JavaScript strings or browser-managed copies.
+
+V2 signatures establish authorship relative to the enrolled pseudonymous keys; they do not prove a real-world identity or the truth of a report. Authenticated encryption alone does not distinguish which participant authored a message.
+
+The server history checker detects tested inconsistent edits, missing records and corrupted files against its current head/snapshots. It does not establish historical completeness. Coordinated rollback of the database and history can pass; a malicious backend can omit events or lie about status. The browser independently verifies content signatures, not the server's completeness claim. No trusted external checkpoint is implemented.
+
+This remains one local workspace with process-local sessions/challenges and one API worker. PostgreSQL, multiple workers and the Docker example were not verified in M4. The public legacy demonstration identity is unsuitable for private reports.
+
+## Limits and maintenance
+
+- Plaintext files must be smaller than 10 MiB: maximum **10,485,759 bytes**. The largest encrypted bucket is **10,485,776 bytes**, including the 16-byte authentication tag.
+- At most 10 attachments and 32 MiB encrypted total per report/reply. Text plus encrypted metadata input must fit the existing 64 KiB UTF-8 payload limit.
+- If storage is disabled and the tab is lost, use saved words to check Track before creating another report. Missing original file bytes cannot be reconstructed by retry.
+- `python cleanup_attachments.py` previews managed expired staging. `--apply` is explicit maintenance; finalized files are preserved and ambiguous older files are not guessed away. Review backups and the M3 maintenance contract first.
+
+## Local setup and migration
+
+The verified reproducible setup is in [DEMO.md](DEMO.md). Existing workspace configuration is documented in [Investigator access](INVESTIGATOR_ACCESS.md) and [v2 identity setup/pinning](CRYPTOGRAPHIC_AUTHENTICITY.md). Keep existing identities and pins when upgrading.
+
+M4 adds only `case_history_heads` and `case_history_events`. Startup fails closed if an existing database lacks them. A non-mutating inspection is:
+
+```powershell
+python migrate_m4.py --database "sqlite:///./whistleblower.db"
 ```
 
-- **Frontend:** `http://localhost:3000`
-- **Backend API:** `http://localhost:8000`
-- **Swagger Docs:** `http://localhost:8000/docs`
+Back up and verify a protected disposable copy before any approved real migration. Do not reset the database or regenerate identities. Existing v2 cases get an explicitly labelled baseline on first successful mutation; old activity is not retroactively certified. Pre-M4 pending staging must be prepared again. Update frontend and backend together.
 
----
+## Verification
 
-### Local Setup
-
-#### Backend (Python 3.10+)
-
-```bash
-# Create and activate virtual environment
-python -m venv venv
-venv\Scripts\activate   # Linux/macOS: source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Seed test database
-python seed.py
-
-# Run API server
-uvicorn main:app --host 127.0.0.1 --port 8000 --reload
-```
-
-#### Frontend (Node.js 18+)
-
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
----
-
-## Test Credentials
-
-For testing the investigator portal (`/investigator`):
-
-- **Username:** `investigator@sealed.org` (or `compliance.lead@integrity-trust.corp`)
-- **Password:** `Password123!` (or `Correct-Horse-Battery-Staple-2026!#`)
-
----
-
-## Running Automated Tests
-
-```bash
-# 1. Backend integration tests (18 tests covering crypto, rate limits, attachments, audit chain)
+```powershell
+python -m unittest test_submission_reliability test_investigator_auth test_message_protocol test_milestone4 -q
 python test_api.py
-
-# 2. Frontend build and TypeScript validation
-cd frontend && npm run build
+npm run test:frontend
+npx tsc --noEmit
+npm --prefix frontend run lint
+# In frontend/: npx tsc --noEmit
+npm --prefix frontend run build
+npm run demo:e2e
 ```
 
----
+Final results: 74 backend tests, 22 API regression groups, 24 frontend reliability/crypto groups, 27 request-authentication checks, 8 isolated live workflow groups, lint, both TypeScript projects and production build passed. Browser verification covered recovery, signed conversation, decrypted attachment download, close/reopen and legacy archive. Migration on a protected copy preserved all 8 existing tables / 32 rows. See [MILESTONE_4_REPORT.md](MILESTONE_4_REPORT.md) for exact scope and unresolved limitations.
 
-## License
+## Code and documentation map
 
-MIT
+- `reporter_auth.py`, `routers/reporter_authentication.py`: Reporter challenge/proof authorization.
+- `investigator_auth.py`, `routers/investigator_sessions.py`: independent Investigator authentication/session boundary.
+- `message_protocol.py`, `frontend/src/lib/protocol.ts`: v2 signature/identity checks.
+- `frontend/src/lib/crypto.ts`: existing browser encryption and recovery primitives.
+- `routers/cases.py`, `routers/investigators.py`: submission, conversation and lifecycle operations.
+- `attachment_service.py`, `cleanup_attachments.py`: owned uploads, claims and conservative maintenance.
+- `history_service.py`, `migrate_m4.py`: current consistency history and explicit migration.
+- `frontend/src/lib/{submission,replyDelivery,reporterAuth,api}.ts`: client lifecycle, retries and proofs.
+- [M4 security audit](MILESTONE_4_SECURITY_AUDIT.md), [M4 report](MILESTONE_4_REPORT.md), [demo](DEMO.md).
+- Historical context: [initial review](SEALED_TECHNICAL_REVIEW.md), [M1](INVESTIGATOR_ACCESS.md), [M2](CRYPTOGRAPHIC_AUTHENTICITY.md), [M3](MILESTONE_3_REPORT.md). M4 supersedes their static Reporter credential, public download and old audit descriptions.
+
+## Security and license
+
+Read [SECURITY.md](SECURITY.md) before reporting a security issue or using real data.
+This project is licensed under the [MIT license](LICENSE).
